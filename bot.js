@@ -117,6 +117,8 @@ const commands = [
   new SlashCommandBuilder().setName('next').setDescription('Skip to the next song in the queue'),
   new SlashCommandBuilder().setName('jump').setDescription('Jump to a queue position (number from /queue)')
     .addIntegerOption((o) => o.setName('position').setDescription('Position number, e.g. 3').setRequired(true).setMinValue(1)),
+  new SlashCommandBuilder().setName('cut').setDescription('Jump to a position and delete everything before it')
+    .addIntegerOption((o) => o.setName('position').setDescription('Position number, e.g. 3').setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName('stop').setDescription('Stop and leave the channel'),
   new SlashCommandBuilder().setName('queue').setDescription('Show the queue'),
   new SlashCommandBuilder().setName('list').setDescription('Show the queue'),
@@ -189,6 +191,16 @@ client.on('interactionCreate', async (interaction) => {
     s.player?.stop();                       // Idle shifts current -> target plays next
     return interaction.reply(`⏭️ Playing **${track.title}** next — the rest stays queued.`);
   }
+  if (cmd === 'cut') {
+    const pos = interaction.options.getInteger('position');
+    if (pos < 1 || pos >= s.queue.length) {
+      return interaction.reply('No song at that position — check /queue.');
+    }
+    s.queue.splice(1, pos - 1);      // delete the upcoming songs before the target
+    const target = s.queue[1].title; // target now sits right after the current one
+    s.player?.stop();                // Idle shifts current -> target plays next
+    return interaction.reply(`✂️ Cut to **${target}** — earlier songs removed.`);
+  }
   if (cmd === 'stop') {
     s.queue = [];
     s.player?.stop();
@@ -209,7 +221,8 @@ client.on('interactionCreate', async (interaction) => {
       '`/play <url or search>` — play a song or add it to the queue',
       '`/queue` or `/list` — show the queue',
       '`/next` or `/skip` — skip to the next song',
-      '`/jump <number>` — jump to a queue position (see /queue)',
+      '`/jump <number>` — jump to a queue position, keep the rest (see /queue)',
+      '`/cut <number>` — jump to a position and delete everything before it',
       '`/pause` — pause playback',
       '`/resume` — resume playback',
       '`/stop` — stop and leave the channel',

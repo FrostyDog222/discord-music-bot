@@ -1,9 +1,24 @@
 # Discord Music Bot
 
 Private, self-hosted YouTube music bot for you and your friends.
-Commands: `/play` `/queue` (`/list`) `/next` (`/skip`) `/jump` `/pause` `/resume` `/stop` `/help`
 
-Plays single songs, search terms, or whole playlists.
+> 🎵 Your personal DJ — play any YouTube song or playlist in voice chat.
+> Paste a link or just search. Join voice and hit `/play`. 🔊
+
+## Commands
+
+| Command | What it does |
+|---------|--------------|
+| `/play <url or search>` | Play a song, search term, or whole playlist (adds to the queue) |
+| `/queue` (or `/list`) | Show what's lined up |
+| `/next` (or `/skip`) | Skip to the next song |
+| `/jump <n>` | Jump to a queue position, **keep** the songs before it (they play after) |
+| `/cut <n>` | Jump to a position and **delete** everything before it |
+| `/pause` · `/resume` | Pause / resume playback |
+| `/stop` | Clear the queue and leave the channel |
+| `/help` | Show all commands in Discord |
+
+The queue lives in memory only — it resets when the bot restarts.
 
 ## Quick setup (new PC)
 
