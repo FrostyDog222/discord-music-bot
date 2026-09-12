@@ -125,16 +125,25 @@ const commands = [
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
+const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+// Guild-scoped registration = instant (global takes ~1h). Register on every
+// server the bot is in, so it works across all of them.
+async function registerCommands(guildId) {
+  try {
+    await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: commands });
+  } catch (e) {
+    console.error(`Command registration failed for guild ${guildId}:`, e.message);
+  }
+}
+
 client.once('ready', async () => {
-  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
-  // Guild-scoped = instant registration (global takes ~1h).
-  await rest.put(
-    Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
-    { body: commands },
-  );
+  for (const [id] of client.guilds.cache) await registerCommands(id);
   client.user.setActivity('/help', { type: ActivityType.Listening });
-  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag} (${client.guilds.cache.size} server(s))`);
 });
+
+// Auto-register when the bot is added to a new server.
+client.on('guildCreate', (guild) => registerCommands(guild.id));
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;

@@ -24,13 +24,16 @@ The queue lives in memory only — it resets when the bot restarts.
 
 If you already have these files (e.g. cloned from GitHub), just double-click
 **`First Time Setup.bat`**. It installs Node/ffmpeg/yt-dlp, installs the bot's
-dependencies, asks for your bot TOKEN + server ID, and optionally sets up
-auto-start at login.
+dependencies, asks for your bot TOKEN, and optionally sets up auto-start at
+login.
 
-First need a bot token + server ID? See **[DISCORD_SETUP.md](DISCORD_SETUP.md)**.
+First need a bot token? See **[DISCORD_SETUP.md](DISCORD_SETUP.md)**.
 
-> Only run ONE copy of the bot at a time — it's the same bot account, so a
-> second instance can't connect to voice. Stop it on the old PC first.
+> **Works on multiple servers.** Invite the bot to any server and its commands
+> register there automatically — each server gets its own separate queue.
+
+> Only run ONE copy of the bot process at a time — it's the same bot account,
+> so a second instance can't connect to voice. Stop it on the old PC first.
 
 > Streaming uses yt-dlp (keeps up with YouTube changes). If a song ever fails,
 > run `winget upgrade yt-dlp` (or the dashboard's "Update yt-dlp now").
@@ -56,8 +59,6 @@ After installing ffmpeg / yt-dlp, **restart your terminal** so they're on PATH.
 ### 3. Configure
 1. Copy `.env.example` to `.env`
 2. Paste your **TOKEN**
-3. Get your **GUILD_ID**: Discord → Settings → Advanced → enable Developer Mode,
-   then right-click your server icon → **Copy Server ID** → paste it
 
 ### 4. Install & run
 ```

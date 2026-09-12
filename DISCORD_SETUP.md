@@ -1,7 +1,11 @@
 # Discord Setup — creating the bot & inviting it
 
-Do this once, on the Discord side, to get your **bot token** and **server ID**
-(the two values that go in `.env`). Takes about 5 minutes.
+Do this once, on the Discord side, to get your **bot token** (the value that
+goes in `.env`) and invite the bot. Takes about 5 minutes.
+
+> The bot works on **any server you invite it to** — commands register
+> automatically per server, each with its own queue. To add it to more servers,
+> just repeat step 3 (the invite) for each one.
 
 ---
 
@@ -44,24 +48,19 @@ The bot now appears in your server (greyed out / offline until you run it).
 > (replace `YOUR_APP_ID` with the Application ID from the **General
 > Information** page).
 
-## 4. Get your server ID (GUILD_ID)
-
-1. In the Discord app: **Settings → Advanced → enable Developer Mode**.
-2. Right-click your **server icon** (left bar) → **Copy Server ID**.
-
-> This is the `GUILD_ID=` value in your `.env`.
-
-## 5. Put both values in `.env`
+## 4. Put your token in `.env`
 
 Copy `.env.example` to `.env` and fill in:
 
 ```
 TOKEN=your-bot-token
-GUILD_ID=your-server-id
 ```
 
-(If you use **First Time Setup.bat**, it asks for these and writes `.env` for
-you — you can skip this step.)
+(If you use **First Time Setup.bat**, it asks for the token and writes `.env`
+for you — you can skip this step.)
+
+That's all the bot needs — no server ID required. It figures out which servers
+it's in on its own.
 
 ---
 

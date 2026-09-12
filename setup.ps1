@@ -23,10 +23,9 @@ Write-Host "`n==> Installing bot dependencies..." -ForegroundColor Cyan
 npm install
 
 if (-not (Test-Path .env)) {
-  Write-Host "`n==> Bot credentials (from the Discord Developer Portal):" -ForegroundColor Cyan
+  Write-Host "`n==> Bot token (Discord Developer Portal -> Bot -> Reset Token):" -ForegroundColor Cyan
   $token = Read-Host "Paste your bot TOKEN"
-  $guild = Read-Host "Paste your server (GUILD) ID"
-  "TOKEN=$token`nGUILD_ID=$guild" | Set-Content -Encoding ASCII .env
+  "TOKEN=$token" | Set-Content -Encoding ASCII .env
   Write-Host ".env created." -ForegroundColor Green
 } else {
   Write-Host "`n.env already exists - leaving it alone." -ForegroundColor Yellow
