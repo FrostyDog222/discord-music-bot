@@ -40,9 +40,14 @@ Private, self-hosted YouTube music bot for you and your friends.
 | `/deleteallplaylists` | Delete all saved playlists (asks to confirm) |
 | `/help` | Show all commands in Discord |
 
-The live queue lives in memory only (resets on restart). **Saved playlists**
-persist to `playlists.json`. The bot **auto-leaves** when it's alone in the
-channel (5 min) or when the queue finishes (1 min).
+The live queue lives in memory only (resets on restart). The bot **auto-leaves**
+when it's alone in the channel (5 min) or when the queue finishes (1 min).
+
+> **Where saved playlists live:** `/save` writes to a `playlists.json` file on
+> the **PC running the bot** — locally only, not in the cloud and not synced.
+> They stay across restarts, but if you move the bot to another PC they won't
+> come along unless you copy `playlists.json` over. (Each Discord server has its
+> own set of saved playlists.)
 
 ## Quick setup (new PC)
 
