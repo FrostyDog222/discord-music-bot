@@ -48,6 +48,12 @@ Repeat for each server you want the bot in.
 > To add it to servers **other people** own, turn **Public Bot** ON on the Bot
 > tab first (otherwise only you can add it).
 
+> The bot only asks for what it needs (View Channels, Send Messages, Connect,
+> Speak) — no admin. If a **voice channel is private** (locked to certain
+> roles), the bot can't join it until you give its role access: Server Settings
+> → that channel → Permissions → add the bot's role (or the bot itself) with
+> **View Channel** + **Connect** + **Speak**.
+
 <details>
 <summary>Or build the link manually (OAuth2 URL Generator)</summary>
 
