@@ -173,8 +173,11 @@ client.on('interactionCreate', async (interaction) => {
   }
   if (cmd === 'skip' || cmd === 'next') {
     if (!s.queue.length) return interaction.reply('Nothing to skip.');
+    const upcoming = s.queue[1]; // becomes current after the stop -> Idle shift
     s.player?.stop(); // triggers Idle -> playNext
-    return interaction.reply('⏭️ Skipped.');
+    return interaction.reply(upcoming
+      ? `⏭️ Skipped — now playing **${upcoming.title}**`
+      : '⏭️ Skipped — queue is empty.');
   }
   if (cmd === 'jump') {
     const pos = interaction.options.getInteger('position');
