@@ -210,6 +210,8 @@ const commands = [
   new SlashCommandBuilder().setName('playlists').setDescription('List your saved playlists'),
   new SlashCommandBuilder().setName('deleteplaylist').setDescription('Delete a saved playlist')
     .addStringOption((o) => o.setName('name').setDescription('Name or number from /playlists').setRequired(true)),
+  new SlashCommandBuilder().setName('deleteallplaylists').setDescription('Delete ALL saved playlists on this server')
+    .addBooleanOption((o) => o.setName('confirm').setDescription('Set to true to confirm').setRequired(true)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -403,6 +405,16 @@ client.on('interactionCreate', async (interaction) => {
     savePlaylists();
     return interaction.reply(`🗑️ Deleted saved playlist **${name}**.`);
   }
+  if (cmd === 'deleteallplaylists') {
+    if (!interaction.options.getBoolean('confirm')) {
+      return interaction.reply('Cancelled — set `confirm` to **true** to wipe all playlists.');
+    }
+    const count = Object.keys(playlists[interaction.guildId] || {}).length;
+    if (!count) return interaction.reply('No saved playlists to delete.');
+    delete playlists[interaction.guildId];
+    savePlaylists();
+    return interaction.reply(`🗑️ Deleted all **${count}** saved playlist(s) on this server.`);
+  }
   if (cmd === 'help') {
     return interaction.reply([
       '**🎵 Music bot commands**',
@@ -413,7 +425,8 @@ client.on('interactionCreate', async (interaction) => {
       '`/shuffle` — shuffle upcoming · `/loop off|song|queue` — repeat',
       '`/volume <0-200>` — set volume',
       '`/pause` · `/resume` · `/stop` — leave the channel',
-      '`/save <name>` · `/load <name>` · `/playlists` · `/deleteplaylist <name>` — saved playlists',
+      '`/save <name>` · `/load <name>` · `/playlists` — saved playlists',
+      '`/deleteplaylist <name/#>` · `/deleteallplaylists` — remove saved playlists',
       '`/help` — this message',
     ].join('\n'));
   }
