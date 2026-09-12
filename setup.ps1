@@ -47,5 +47,8 @@ if ($ans -eq 'y') {
 }
 
 Write-Host "`n=== Setup complete! ===" -ForegroundColor Green
-Write-Host "Start it with 'Music Bot.bat', or it auto-starts at next login."
+Write-Host "Note: this setup does NOT start or stop the bot." -ForegroundColor Yellow
+Write-Host "To start it now: run 'Music Bot.bat' and choose [1] Start."
+Write-Host "Or, if you enabled auto-start, it launches on its own at your next login."
+Write-Host "(Re-running this setup is safe - it won't touch a running bot or your .env.)"
 Read-Host "`nPress Enter to exit"
