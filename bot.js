@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActivityType, EmbedBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
@@ -21,6 +22,22 @@ try { playlists = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8')); } catch {
 function savePlaylists() {
   try { fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(playlists)); }
   catch (e) { console.error('playlist save failed:', e.message); }
+}
+
+// Parse "1,2 3" into a unique list of positive integers.
+function parseNumberList(input) {
+  return [...new Set(String(input).split(/[\s,]+/).filter((x) => /^\d+$/.test(x)).map(Number))];
+}
+
+// Resolve a saved playlist by name or 1-based number; returns its key or null.
+function resolvePlaylistName(guildId, input) {
+  const g = playlists[guildId];
+  const names = g ? Object.keys(g) : [];
+  if (!names.length) return null;
+  const t = String(input).trim();
+  if (/^\d+$/.test(t)) return names[parseInt(t, 10) - 1] || null;
+  const lower = t.toLowerCase();
+  return g[lower] ? lower : null;
 }
 
 // --- helpers ---
@@ -42,6 +59,25 @@ function nowPlayingEmbed(track, heading = 'Now playing') {
   if (track.requestedBy) e.addFields({ name: 'Requested by', value: track.requestedBy, inline: true });
   if (track.thumbnail) e.setThumbnail(track.thumbnail);
   return e;
+}
+
+// Show a Yes/No prompt on the interaction; resolve to the clicked button (or null on timeout).
+async function askYesNo(interaction, content, danger = false) {
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('yes').setLabel('Yes')
+      .setStyle(danger ? ButtonStyle.Danger : ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('no').setLabel('No').setStyle(ButtonStyle.Secondary),
+  );
+  const msg = await interaction.reply({ content, components: [row], fetchReply: true });
+  try {
+    const btn = await msg.awaitMessageComponent({
+      filter: (i) => i.user.id === interaction.user.id, time: 30000,
+    });
+    return btn; // btn.customId is 'yes' or 'no'; caller must btn.update(...)
+  } catch {
+    await interaction.editReply({ content: '⏱️ Timed out — nothing changed.', components: [] });
+    return null;
+  }
 }
 
 // Resolve a URL/search/playlist to an array of { title, url, duration, thumbnail }.
@@ -190,8 +226,8 @@ const commands = [
     .addIntegerOption((o) => o.setName('position').setDescription('Position number, e.g. 3').setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName('cut').setDescription('Jump to a position and delete everything before it')
     .addIntegerOption((o) => o.setName('position').setDescription('Position number, e.g. 3').setRequired(true).setMinValue(1)),
-  new SlashCommandBuilder().setName('remove').setDescription('Remove one song from the queue')
-    .addIntegerOption((o) => o.setName('position').setDescription('Position number from /queue').setRequired(true).setMinValue(1)),
+  new SlashCommandBuilder().setName('remove').setDescription('Remove song(s) from the queue')
+    .addStringOption((o) => o.setName('positions').setDescription('Position(s) from /queue, e.g. 2 or 2,3,5').setRequired(true)),
   new SlashCommandBuilder().setName('clear').setDescription('Clear the queue (keeps the current song)'),
   new SlashCommandBuilder().setName('shuffle').setDescription('Shuffle the upcoming songs'),
   new SlashCommandBuilder().setName('loop').setDescription('Set loop mode')
@@ -208,10 +244,17 @@ const commands = [
   new SlashCommandBuilder().setName('load').setDescription('Load a saved playlist into the queue')
     .addStringOption((o) => o.setName('name').setDescription('Playlist name').setRequired(true)),
   new SlashCommandBuilder().setName('playlists').setDescription('List your saved playlists'),
-  new SlashCommandBuilder().setName('deleteplaylist').setDescription('Delete a saved playlist')
-    .addStringOption((o) => o.setName('name').setDescription('Name or number from /playlists').setRequired(true)),
-  new SlashCommandBuilder().setName('deleteallplaylists').setDescription('Delete ALL saved playlists on this server')
-    .addBooleanOption((o) => o.setName('confirm').setDescription('Set to true to confirm').setRequired(true)),
+  new SlashCommandBuilder().setName('showplaylist').setDescription('Show the songs in a saved playlist')
+    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true)),
+  new SlashCommandBuilder().setName('removefromplaylist').setDescription('Remove song(s) from a saved playlist')
+    .addStringOption((o) => o.setName('playlist').setDescription('Playlist name or number').setRequired(true))
+    .addStringOption((o) => o.setName('song').setDescription('Song number(s) e.g. 1,3 (from /showplaylist) or a name').setRequired(true)),
+  new SlashCommandBuilder().setName('deleteplaylist').setDescription('Delete saved playlist(s)')
+    .addStringOption((o) => o.setName('name').setDescription('Name(s) or number(s), e.g. rock or 1,3').setRequired(true)),
+  new SlashCommandBuilder().setName('deleteallplaylists').setDescription('Delete ALL saved playlists on this server'),
+  new SlashCommandBuilder().setName('addtoplaylist').setDescription('Add a song to a saved playlist')
+    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true))
+    .addStringOption((o) => o.setName('song').setDescription('URL or search (defaults to the current song)').setRequired(false)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -324,10 +367,11 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply(`✂️ Cut to **${target}** — earlier songs removed.`);
   }
   if (cmd === 'remove') {
-    const pos = interaction.options.getInteger('position');
-    if (pos < 1 || pos >= s.queue.length) return interaction.reply('No song at that position — check /queue.');
-    const [removed] = s.queue.splice(pos, 1);
-    return interaction.reply(`🗑️ Removed **${removed.title}** from the queue.`);
+    const nums = parseNumberList(interaction.options.getString('positions'));
+    const idxs = nums.filter((n) => n >= 1 && n < s.queue.length).sort((a, b) => b - a);
+    if (!idxs.length) return interaction.reply('No valid positions — check /queue (can\'t remove the current song).');
+    const removed = idxs.map((i) => s.queue.splice(i, 1)[0]).reverse();
+    return interaction.reply(`🗑️ Removed ${removed.length} song(s):\n${removed.map((t) => `• ${t.title}`).join('\n')}`.slice(0, 1900));
   }
   if (cmd === 'clear') {
     const n = Math.max(0, s.queue.length - 1);
@@ -375,11 +419,17 @@ client.on('interactionCreate', async (interaction) => {
   if (cmd === 'save') {
     const name = interaction.options.getString('name').toLowerCase();
     if (!s.queue.length) return interaction.reply('Queue is empty — nothing to save.');
+    const exists = playlists[interaction.guildId]?.[name];
+    const btn = await askYesNo(interaction,
+      `Save the current queue (**${s.queue.length}** songs) as **${name}**?${exists ? '\n⚠️ A playlist with that name already exists — this will overwrite it.' : ''}`,
+      Boolean(exists));
+    if (!btn) return;
+    if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing saved.', components: [] });
     (playlists[interaction.guildId] ??= {})[name] = s.queue.map((t) => ({
       title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null,
     }));
     savePlaylists();
-    return interaction.reply(`💾 Saved **${s.queue.length}** songs as playlist **${name}**.`);
+    return btn.update({ content: `💾 Saved **${s.queue.length}** songs as playlist **${name}**.`, components: [] });
   }
   if (cmd === 'playlists') {
     const g = playlists[interaction.guildId] || {};
@@ -387,10 +437,64 @@ client.on('interactionCreate', async (interaction) => {
     if (!names.length) return interaction.reply('No saved playlists yet. Save one with `/save <name>`.');
     return interaction.reply('📚 **Saved playlists:**\n' + names.map((n, i) => `${i + 1}. ${n} (${g[n].length} songs)`).join('\n'));
   }
+  if (cmd === 'showplaylist') {
+    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
+    if (!name) return interaction.reply('No such playlist. See /playlists.');
+    const songs = playlists[interaction.guildId][name];
+    const list = songs.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
+    return interaction.reply(`📃 **${name}** (${songs.length} songs)\n${list}`.slice(0, 1900));
+  }
+  if (cmd === 'removefromplaylist') {
+    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('playlist'));
+    if (!name) return interaction.reply('No such playlist. See /playlists.');
+    const songs = playlists[interaction.guildId][name];
+    const songInput = interaction.options.getString('song').trim();
+    const nums = parseNumberList(songInput);
+    let removed;
+    if (nums.length) {
+      const idxs = nums.map((n) => n - 1).filter((i) => i >= 0 && i < songs.length).sort((a, b) => b - a);
+      if (!idxs.length) return interaction.reply(`No valid song numbers in **${name}**. Try /showplaylist ${name}.`);
+      removed = idxs.map((i) => songs.splice(i, 1)[0]).reverse();
+    } else {
+      const idx = songs.findIndex((t) => t.title.toLowerCase().includes(songInput.toLowerCase()));
+      if (idx < 0) return interaction.reply(`Couldn't find that song in **${name}**. Try /showplaylist ${name}.`);
+      removed = [songs.splice(idx, 1)[0]];
+    }
+    let note;
+    if (songs.length === 0) { delete playlists[interaction.guildId][name]; note = ' Playlist is now empty and was removed.'; }
+    else note = ` (${songs.length} left)`;
+    savePlaylists();
+    return interaction.reply(`🗑️ Removed ${removed.length} song(s) from **${name}**:\n${removed.map((t) => `• ${t.title}`).join('\n')}${note}`.slice(0, 1900));
+  }
   if (cmd === 'deleteplaylist') {
     const g = playlists[interaction.guildId];
+    if (!g || !Object.keys(g).length) return interaction.reply('No saved playlists. See /playlists.');
+    const tokens = interaction.options.getString('name').split(/[\s,]+/).filter(Boolean);
+    const targets = [...new Set(tokens.map((t) => resolvePlaylistName(interaction.guildId, t)).filter(Boolean))];
+    if (!targets.length) return interaction.reply('No matching playlists — see /playlists.');
+    const btn = await askYesNo(interaction,
+      `⚠️ Delete ${targets.length} saved playlist(s): **${targets.join(', ')}**?\nThis can't be undone.`, true);
+    if (!btn) return;
+    if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing deleted.', components: [] });
+    targets.forEach((n) => delete g[n]);
+    savePlaylists();
+    return btn.update({ content: `🗑️ Deleted: **${targets.join(', ')}**.`, components: [] });
+  }
+  if (cmd === 'deleteallplaylists') {
+    const count = Object.keys(playlists[interaction.guildId] || {}).length;
+    if (!count) return interaction.reply('No saved playlists to delete.');
+    const btn = await askYesNo(interaction,
+      `⚠️ **Delete ALL ${count} saved playlist(s) on this server?**\nThis cannot be undone.`, true);
+    if (!btn) return;
+    if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing deleted.', components: [] });
+    delete playlists[interaction.guildId];
+    savePlaylists();
+    return btn.update({ content: `🗑️ Deleted all **${count}** saved playlist(s).`, components: [] });
+  }
+  if (cmd === 'addtoplaylist') {
+    const g = playlists[interaction.guildId];
     const names = g ? Object.keys(g) : [];
-    if (!names.length) return interaction.reply('No saved playlists. See /playlists.');
+    if (!names.length) return interaction.reply('No saved playlists yet. Create one with /save first.');
     const input = interaction.options.getString('name').trim();
     let name;
     if (/^\d+$/.test(input)) {
@@ -401,19 +505,30 @@ client.on('interactionCreate', async (interaction) => {
       name = input.toLowerCase();
     }
     if (!g[name]) return interaction.reply(`No saved playlist **${input}**. See /playlists.`);
-    delete g[name];
-    savePlaylists();
-    return interaction.reply(`🗑️ Deleted saved playlist **${name}**.`);
-  }
-  if (cmd === 'deleteallplaylists') {
-    if (!interaction.options.getBoolean('confirm')) {
-      return interaction.reply('Cancelled — set `confirm` to **true** to wipe all playlists.');
+
+    const song = interaction.options.getString('song');
+    let toAdd;
+    if (song) {
+      await interaction.deferReply();
+      try {
+        toAdd = (await resolveTracks(song)).map((t) => ({
+          title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null,
+        }));
+      } catch (e) {
+        console.error(e);
+        return interaction.editReply('Could not find that song.');
+      }
+    } else {
+      const cur = s.queue[0];
+      if (!cur) return interaction.reply('Nothing is playing — give a song, or play one first.');
+      toAdd = [{ title: cur.title, url: cur.url, duration: cur.duration ?? null, thumbnail: cur.thumbnail ?? null }];
     }
-    const count = Object.keys(playlists[interaction.guildId] || {}).length;
-    if (!count) return interaction.reply('No saved playlists to delete.');
-    delete playlists[interaction.guildId];
+    g[name].push(...toAdd);
     savePlaylists();
-    return interaction.reply(`🗑️ Deleted all **${count}** saved playlist(s) on this server.`);
+    const reply = toAdd.length === 1
+      ? `➕ Added **${toAdd[0].title}** to **${name}** (now ${g[name].length} songs).`
+      : `➕ Added **${toAdd.length}** songs to **${name}** (now ${g[name].length} songs).`;
+    return song ? interaction.editReply(reply) : interaction.reply(reply);
   }
   if (cmd === 'help') {
     return interaction.reply([
@@ -426,6 +541,9 @@ client.on('interactionCreate', async (interaction) => {
       '`/volume <0-200>` — set volume',
       '`/pause` · `/resume` · `/stop` — leave the channel',
       '`/save <name>` · `/load <name>` · `/playlists` — saved playlists',
+      '`/showplaylist <name/#>` — view a playlist\'s songs',
+      '`/addtoplaylist <name> [song]` — add a song (or the current one) to a playlist',
+      '`/removefromplaylist <name> <song/#>` — remove a song from a playlist',
       '`/deleteplaylist <name/#>` · `/deleteallplaylists` — remove saved playlists',
       '`/help` — this message',
     ].join('\n'));

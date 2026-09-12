@@ -15,17 +15,21 @@ Private, self-hosted YouTube music bot for you and your friends.
 | `/next` (or `/skip`) | Skip to the next song |
 | `/jump <n>` | Jump to a queue position, **keep** the songs before it (they play after) |
 | `/cut <n>` | Jump to a position and **delete** everything before it |
-| `/remove <n>` | Remove one song from the queue |
+| `/remove <n[,n...]>` | Remove one or more songs from the queue (e.g. `2,3,5`) |
 | `/clear` | Clear the queue (the current song keeps playing) |
 | `/shuffle` | Shuffle the upcoming songs |
 | `/loop off\|song\|queue` | Repeat the current song, the whole queue, or off |
 | `/volume <0-200>` | Set playback volume |
 | `/pause` · `/resume` | Pause / resume playback |
 | `/stop` | Clear the queue and leave the channel |
-| `/save <name>` | Save the current queue as a playlist |
+| `/save <name>` | Save the current queue as a playlist (asks to confirm; warns on overwrite) |
 | `/load <name>` | Load a saved playlist into the queue |
 | `/playlists` | List saved playlists (numbered) |
-| `/deleteplaylist <name or #>` | Delete a saved playlist |
+| `/showplaylist <name or #>` | View the songs in a saved playlist |
+| `/addtoplaylist <name> [song]` | Add a song (or the current one) to a playlist |
+| `/removefromplaylist <name> <n[,n...] or title>` | Remove song(s) from a playlist |
+| `/deleteplaylist <name/# [,...]>` | Delete one or more saved playlists (asks to confirm) |
+| `/deleteallplaylists` | Delete all saved playlists (asks to confirm) |
 | `/help` | Show all commands in Discord |
 
 The live queue lives in memory only (resets on restart). **Saved playlists**
