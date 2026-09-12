@@ -31,6 +31,8 @@ First need a bot token? See **[DISCORD_SETUP.md](DISCORD_SETUP.md)**.
 
 > **Works on multiple servers.** Invite the bot to any server and its commands
 > register there automatically — each server gets its own separate queue.
+> Invite link (permissions pre-filled):
+> `https://discord.com/oauth2/authorize?client_id=1548345047320363129&permissions=3148800&scope=bot+applications.commands`
 
 > Only run ONE copy of the bot process at a time — it's the same bot account,
 > so a second instance can't connect to voice. Stop it on the old PC first.

@@ -28,25 +28,31 @@ goes in `.env`) and invite the bot. Takes about 5 minutes.
 
 ## 3. Invite the bot to your server
 
+**Easiest — use this ready-made invite link** (permissions are baked in, so
+whoever opens it is automatically prompted to grant exactly what the bot needs
+— View Channels, Send Messages, Connect, Speak):
+
+```
+https://discord.com/oauth2/authorize?client_id=1548345047320363129&permissions=3148800&scope=bot+applications.commands
+```
+
+Open it → pick a server → **Authorize** (solve the captcha if shown). Discord
+shows the required permissions pre-checked and creates the bot's role with them.
+Repeat for each server you want the bot in.
+
+> To add it to servers **other people** own, turn **Public Bot** ON on the Bot
+> tab first (otherwise only you can add it).
+
+<details>
+<summary>Or build the link manually (OAuth2 URL Generator)</summary>
+
 1. Left sidebar → **OAuth2** → **OAuth2 URL Generator**.
-2. Under **Scopes**, check:
-   - `bot`
-   - `applications.commands`
-3. A **Bot Permissions** box appears. Check:
-   - **View Channels**
-   - **Send Messages**
-   - **Connect**
-   - **Speak**
-4. Scroll to the bottom, **Copy** the generated URL.
-5. Paste it in a browser → pick your server → **Authorize** (solve the captcha
-   if shown).
+2. Scopes: `bot`, `applications.commands`.
+3. Bot Permissions: **View Channels**, **Send Messages**, **Connect**, **Speak**.
+4. Copy the generated URL at the bottom, open it, authorize.
+</details>
 
 The bot now appears in your server (greyed out / offline until you run it).
-
-> Shortcut: an invite link with the right permissions looks like
-> `https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=3148800&scope=bot+applications.commands`
-> (replace `YOUR_APP_ID` with the Application ID from the **General
-> Information** page).
 
 ## 4. Put your token in `.env`
 

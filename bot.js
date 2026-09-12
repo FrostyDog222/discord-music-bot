@@ -44,13 +44,14 @@ const client = new Client({
   ],
 });
 
-// Per-guild state: { connection, player, queue: [{title, url, requestedBy}] }
+// Per-guild state. textChannel = where to post auto-advance messages;
+// suppressAnnounce = skip the "Now playing" post when a command caused the change.
 const guilds = new Map();
 
 function getState(guildId) {
   let s = guilds.get(guildId);
   if (!s) {
-    s = { connection: null, player: null, queue: [] };
+    s = { connection: null, player: null, queue: [], textChannel: null, suppressAnnounce: false };
     guilds.set(guildId, s);
   }
   return s;
@@ -86,9 +87,15 @@ async function ensureConnection(interaction, s) {
 
     s.connection.on('error', (e) => console.error('[voice error]', e.message));
 
-    s.player.on(AudioPlayerStatus.Idle, () => {
+    s.player.on(AudioPlayerStatus.Idle, async () => {
+      const suppress = s.suppressAnnounce; // consume: only commands set this
+      s.suppressAnnounce = false;
       s.queue.shift();          // current song done
-      if (s.queue.length) playNext(interaction.guildId);
+      if (!s.queue.length) return;
+      await playNext(interaction.guildId);
+      if (!suppress) {
+        s.textChannel?.send(`🎶 Now playing **${s.queue[0].title}**`).catch(() => {});
+      }
     });
     s.player.on('error', (e) => {
       console.error('Player error:', e.message);
@@ -149,6 +156,7 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const s = getState(interaction.guildId);
   const cmd = interaction.commandName;
+  s.textChannel = interaction.channel; // post auto-advance messages here
 
   if (cmd === 'play') {
     await interaction.deferReply();
@@ -185,6 +193,7 @@ client.on('interactionCreate', async (interaction) => {
   if (cmd === 'skip' || cmd === 'next') {
     if (!s.queue.length) return interaction.reply('Nothing to skip.');
     const upcoming = s.queue[1]; // becomes current after the stop -> Idle shift
+    s.suppressAnnounce = true;   // this reply already names the next song
     s.player?.stop(); // triggers Idle -> playNext
     return interaction.reply(upcoming
       ? `⏭️ Skipped — now playing **${upcoming.title}**`
@@ -197,6 +206,7 @@ client.on('interactionCreate', async (interaction) => {
     }
     const [track] = s.queue.splice(pos, 1); // pull the target out
     s.queue.splice(1, 0, track);            // move it to play right after the current one
+    s.suppressAnnounce = true;              // this reply already names the song
     s.player?.stop();                       // Idle shifts current -> target plays next
     return interaction.reply(`⏭️ Playing **${track.title}** next — the rest stays queued.`);
   }
@@ -207,6 +217,7 @@ client.on('interactionCreate', async (interaction) => {
     }
     s.queue.splice(1, pos - 1);      // delete the upcoming songs before the target
     const target = s.queue[1].title; // target now sits right after the current one
+    s.suppressAnnounce = true;       // this reply already names the song
     s.player?.stop();                // Idle shifts current -> target plays next
     return interaction.reply(`✂️ Cut to **${target}** — earlier songs removed.`);
   }
