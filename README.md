@@ -3,7 +3,15 @@
 Private, self-hosted YouTube music bot for you and your friends.
 
 > 🎵 Your personal DJ — play any YouTube song or playlist in voice chat.
-> Paste a link or just search. Join voice and hit `/play`. 🔊
+> Paste a link or just search.
+>
+> `/play` · `/queue` · `/nowplaying`
+> `/next` · `/jump` · `/cut` · `/remove` · `/clear`
+> `/shuffle` · `/loop` · `/volume`
+> `/pause` · `/resume` · `/stop`
+> `/save` · `/load` · `/playlists` (+ add / remove / delete)
+>
+> Type `/help` for everything. Join voice and hit `/play`. 🔊
 
 ## Commands
 
