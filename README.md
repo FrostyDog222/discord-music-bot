@@ -1,13 +1,24 @@
 # Discord Music Bot
 
 Private, self-hosted YouTube music bot for you and your friends.
-Commands: `/play` `/pause` `/resume` `/skip` `/next` `/stop` `/queue`
+Commands: `/play` `/queue` (`/list`) `/next` (`/skip`) `/jump` `/pause` `/resume` `/stop` `/help`
 
-> Note: streaming YouTube goes against YouTube's ToS and Google occasionally
-> breaks the extractor. For private use it's fine; if playback suddenly stops
-> working, run `npm update play-dl` (or `npm i play-dl@latest`).
+Plays single songs, search terms, or whole playlists.
 
-## One-time setup
+## Quick setup (new PC)
+
+If you already have these files (e.g. cloned from GitHub), just double-click
+**`First Time Setup.bat`**. It installs Node/ffmpeg/yt-dlp, installs the bot's
+dependencies, asks for your bot TOKEN + server ID, and optionally sets up
+auto-start at login. Then create the bot in Discord (below) if you haven't.
+
+> Only run ONE copy of the bot at a time — it's the same bot account, so a
+> second instance can't connect to voice. Stop it on the old PC first.
+
+> Streaming uses yt-dlp (keeps up with YouTube changes). If a song ever fails,
+> run `winget upgrade yt-dlp` (or the dashboard's "Update yt-dlp now").
+
+## Manual setup (if you skip First Time Setup.bat)
 
 ### 1. Install prerequisites
 - **Node.js 18+** — https://nodejs.org (LTS)
@@ -15,9 +26,6 @@ Commands: `/play` `/pause` `/resume` `/skip` `/next` `/stop` `/queue`
 - **yt-dlp** — in PowerShell: `winget install yt-dlp`
 
 After installing ffmpeg / yt-dlp, **restart your terminal** so they're on PATH.
-
-> Streaming uses yt-dlp (keeps up with YouTube changes). If a song ever fails,
-> update it: `winget upgrade yt-dlp`
 
 ### 2. Create the bot
 1. Go to https://discord.com/developers/applications → **New Application**
