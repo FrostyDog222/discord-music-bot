@@ -1,17 +1,41 @@
-# Discord Music Bot
+# 🎵 Discord Music Bot
 
-Private, self-hosted YouTube music bot for you and your friends.
+A **private, self-hosted** Discord bot that plays YouTube audio in your voice
+channels — for you and your friends. Paste a link or search a name, and it
+joins, plays, and manages a full queue. No subscription, no sketchy public
+bots, and nothing leaves your PC: **you run it, you own it.**
+
+Built with **discord.js** + **@discordjs/voice**, streaming through **yt-dlp**
+and **ffmpeg** (the tools that keep up with YouTube's changes). It works across
+multiple servers at once and — on Windows — starts with your PC and keeps
+itself updated automatically.
 
 > 🎵 Your personal DJ — play any YouTube song or playlist in voice chat.
-> Paste a link or just search.
->
-> `/play` · `/queue` · `/nowplaying`
-> `/next` · `/jump` · `/cut` · `/remove` · `/clear`
-> `/shuffle` · `/loop` · `/volume`
-> `/pause` · `/resume` · `/stop`
-> `/save` · `/load` · `/playlists` (+ add / remove / delete)
->
-> Type `/help` for everything. Join voice and hit `/play`. 🔊
+> Paste a link or just search. Type `/help` for everything, join voice, and
+> hit `/play`. 🔊
+
+## ✨ Features
+
+- **Play anything** — a YouTube URL, a search term, or an entire playlist
+- **Full queue control** — skip, jump, cut, remove (single or batch `2,3,5`), clear, shuffle
+- **Loop** a song or the whole queue · **volume** control (0–200%)
+- **Rich "now playing"** cards with duration + thumbnail
+- **Saved playlists** — save the queue, reload it later, view/add/remove songs, with Yes/No confirmations
+- **Multi-server** — one bot serves every server it's in, each with its own queue
+- **Runs itself (Windows)** — auto-starts at login, auto-updates yt-dlp daily, auto-leaves when idle or alone
+- **Private** — self-hosted; your token and saved playlists never leave your machine
+
+## ⚡ Get started
+
+**Already have the files** (cloned or downloaded)? Double-click
+**`First Time Setup.bat`**, paste your bot token when asked, and you're set —
+it installs everything and can enable auto-start. Then start it from
+**`Music Bot.bat`**.
+
+**Need a bot token first?** Follow **[DISCORD_SETUP.md](DISCORD_SETUP.md)** (about 5 minutes).
+
+**Requirements** — Node.js 18+, ffmpeg, and yt-dlp. On Windows, `First Time
+Setup.bat` installs all three for you; the manual steps are further down.
 
 ## Commands
 
