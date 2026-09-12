@@ -30,6 +30,17 @@ function Disable-AutoStart {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+function Get-InviteLink {
+  # The Application ID is the first token segment (base64url), so we can build
+  # the invite link straight from .env — no hardcoded ID.
+  $line = (Get-Content .env -ErrorAction SilentlyContinue | Where-Object { $_ -match '^TOKEN=' })
+  if (-not $line) { return $null }
+  $b64 = ($line -replace '^TOKEN=', '').Trim().Split('.')[0].Replace('-', '+').Replace('_', '/')
+  switch ($b64.Length % 4) { 2 { $b64 += '==' } 3 { $b64 += '=' } }
+  try { $id = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) } catch { return $null }
+  "https://discord.com/oauth2/authorize?client_id=$id&permissions=3148800&scope=bot+applications.commands"
+}
+
 while ($true) {
   Clear-Host
   Write-Host "================================"
@@ -44,7 +55,8 @@ while ($true) {
   Write-Host "  [3] Restart bot"
   Write-Host "  [4] Update yt-dlp now  (use if YouTube songs stop playing)"
   Write-Host "  [5] Toggle auto-start at login"
-  Write-Host "  [6] Exit  (bot keeps running)`n"
+  Write-Host "  [6] Show invite link"
+  Write-Host "  [7] Exit  (bot keeps running)`n"
   switch (Read-Host "Choose") {
     '1' {
       if (Get-Bot) { Write-Host "Already running." -ForegroundColor Yellow }
@@ -65,6 +77,12 @@ while ($true) {
       else { Enable-AutoStart; Write-Host "Auto-start turned ON." -ForegroundColor Green }
       Start-Sleep 2
     }
-    '6' { exit }
+    '6' {
+      $link = Get-InviteLink
+      if ($link) { Write-Host "`nInvite this bot to a server:`n$link" -ForegroundColor Cyan }
+      else { Write-Host "`nCouldn't read the token from .env." -ForegroundColor Yellow }
+      Read-Host "`nPress Enter"
+    }
+    '7' { exit }
   }
 }

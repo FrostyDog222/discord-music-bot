@@ -147,6 +147,8 @@ client.once('ready', async () => {
   for (const [id] of client.guilds.cache) await registerCommands(id);
   client.user.setActivity('/help', { type: ActivityType.Listening });
   console.log(`Logged in as ${client.user.tag} (${client.guilds.cache.size} server(s))`);
+  const invite = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=3148800&scope=bot+applications.commands`;
+  console.log(`Invite link: ${invite}`);
 });
 
 // Auto-register when the bot is added to a new server.

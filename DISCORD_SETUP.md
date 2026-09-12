@@ -28,12 +28,17 @@ goes in `.env`) and invite the bot. Takes about 5 minutes.
 
 ## 3. Invite the bot to your server
 
-**Easiest — use this ready-made invite link** (permissions are baked in, so
+**Easiest — use your bot's ready-made invite link** (permissions baked in, so
 whoever opens it is automatically prompted to grant exactly what the bot needs
-— View Channels, Send Messages, Connect, Speak):
+— View Channels, Send Messages, Connect, Speak). Get your link from:
+
+- the dashboard: **Music Bot.bat → [6] Show invite link**, or
+- the console / `bot.log` when the bot starts (it prints "Invite link: ...").
+
+It looks like this (with **your** Application ID filled in):
 
 ```
-https://discord.com/oauth2/authorize?client_id=1548345047320363129&permissions=3148800&scope=bot+applications.commands
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=3148800&scope=bot+applications.commands
 ```
 
 Open it → pick a server → **Authorize** (solve the captcha if shown). Discord
