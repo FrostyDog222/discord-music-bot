@@ -11,14 +11,26 @@ Private, self-hosted YouTube music bot for you and your friends.
 |---------|--------------|
 | `/play <url or search>` | Play a song, search term, or whole playlist (adds to the queue) |
 | `/queue` (or `/list`) | Show what's lined up |
+| `/nowplaying` | Show the current song (with duration + thumbnail) |
 | `/next` (or `/skip`) | Skip to the next song |
 | `/jump <n>` | Jump to a queue position, **keep** the songs before it (they play after) |
 | `/cut <n>` | Jump to a position and **delete** everything before it |
+| `/remove <n>` | Remove one song from the queue |
+| `/clear` | Clear the queue (the current song keeps playing) |
+| `/shuffle` | Shuffle the upcoming songs |
+| `/loop off\|song\|queue` | Repeat the current song, the whole queue, or off |
+| `/volume <0-200>` | Set playback volume |
 | `/pause` · `/resume` | Pause / resume playback |
 | `/stop` | Clear the queue and leave the channel |
+| `/save <name>` | Save the current queue as a playlist |
+| `/load <name>` | Load a saved playlist into the queue |
+| `/playlists` | List saved playlists (numbered) |
+| `/deleteplaylist <name or #>` | Delete a saved playlist |
 | `/help` | Show all commands in Discord |
 
-The queue lives in memory only — it resets when the bot restarts.
+The live queue lives in memory only (resets on restart). **Saved playlists**
+persist to `playlists.json`. The bot **auto-leaves** when it's alone in the
+channel (5 min) or when the queue finishes (1 min).
 
 ## Quick setup (new PC)
 
