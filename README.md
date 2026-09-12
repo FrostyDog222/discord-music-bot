@@ -10,7 +10,9 @@ Plays single songs, search terms, or whole playlists.
 If you already have these files (e.g. cloned from GitHub), just double-click
 **`First Time Setup.bat`**. It installs Node/ffmpeg/yt-dlp, installs the bot's
 dependencies, asks for your bot TOKEN + server ID, and optionally sets up
-auto-start at login. Then create the bot in Discord (below) if you haven't.
+auto-start at login.
+
+First need a bot token + server ID? See **[DISCORD_SETUP.md](DISCORD_SETUP.md)**.
 
 > Only run ONE copy of the bot at a time — it's the same bot account, so a
 > second instance can't connect to voice. Stop it on the old PC first.
