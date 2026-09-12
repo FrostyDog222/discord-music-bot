@@ -35,9 +35,10 @@ function resolvePlaylistName(guildId, input) {
   const names = g ? Object.keys(g) : [];
   if (!names.length) return null;
   const t = String(input).trim();
-  if (/^\d+$/.test(t)) return names[parseInt(t, 10) - 1] || null;
   const lower = t.toLowerCase();
-  return g[lower] ? lower : null;
+  if (g[lower]) return lower;                                  // exact name wins (e.g. a playlist named "1")
+  if (/^\d+$/.test(t)) return names[parseInt(t, 10) - 1] || null; // otherwise treat as a position
+  return null;
 }
 
 // --- helpers ---
@@ -242,7 +243,7 @@ const commands = [
   new SlashCommandBuilder().setName('save').setDescription('Save the current queue as a playlist')
     .addStringOption((o) => o.setName('name').setDescription('Playlist name').setRequired(true)),
   new SlashCommandBuilder().setName('load').setDescription('Load a saved playlist into the queue')
-    .addStringOption((o) => o.setName('name').setDescription('Playlist name').setRequired(true)),
+    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true)),
   new SlashCommandBuilder().setName('playlists').setDescription('List your saved playlists'),
   new SlashCommandBuilder().setName('showplaylist').setDescription('Show the songs in a saved playlist')
     .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true)),
@@ -326,9 +327,9 @@ client.on('interactionCreate', async (interaction) => {
   if (cmd === 'load') {
     await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
-    const name = interaction.options.getString('name').toLowerCase();
-    const saved = playlists[interaction.guildId]?.[name];
-    if (!saved || !saved.length) return interaction.editReply(`No saved playlist named **${name}**. See /playlists.`);
+    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
+    const saved = name && playlists[interaction.guildId]?.[name];
+    if (!saved || !saved.length) return interaction.editReply('No saved playlist by that name/number. See /playlists.');
     const startNow = s.queue.length === 0;
     const by = interaction.user.username;
     s.queue.push(...saved.map((t) => ({ ...t, requestedBy: by })));
@@ -417,7 +418,9 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.reply((list + loopNote).slice(0, 1900));
   }
   if (cmd === 'save') {
-    const name = interaction.options.getString('name').toLowerCase();
+    const name = interaction.options.getString('name').toLowerCase().trim();
+    if (/^\d+$/.test(name)) return interaction.reply('Playlist names can\'t be only numbers (that clashes with position numbers) — add some letters.');
+    if (!name) return interaction.reply('Give the playlist a name.');
     if (!s.queue.length) return interaction.reply('Queue is empty — nothing to save.');
     const exists = playlists[interaction.guildId]?.[name];
     const btn = await askYesNo(interaction,
