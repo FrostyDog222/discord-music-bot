@@ -25,7 +25,7 @@ while ($true) {
   Write-Host "  [1] Start bot"
   Write-Host "  [2] Stop bot"
   Write-Host "  [3] Restart bot"
-  Write-Host "  [4] Update yt-dlp now"
+  Write-Host "  [4] Update yt-dlp now  (use if YouTube songs stop playing)"
   Write-Host "  [5] Exit  (bot keeps running)`n"
   switch (Read-Host "Choose") {
     '1' {

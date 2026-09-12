@@ -89,4 +89,16 @@ npm start
 - **Discord Music Bot** — starts the bot at login.
 - **yt-dlp daily update** — updates yt-dlp at 5 AM so songs keep working.
 
-If a song ever fails anyway: open the control panel → **Update yt-dlp now**.
+## Troubleshooting
+
+**YouTube songs stopped playing / "Something broke fetching that track"?**
+YouTube changed something and yt-dlp needs updating. It updates itself daily,
+but you can force it right now:
+
+1. Double-click **`Music Bot.bat`**
+2. Choose **[4] Update yt-dlp now**
+
+(Same thing from a terminal: `winget upgrade yt-dlp`.) Then try `/play` again.
+
+**Commands (`/play` etc.) not showing up?** Restart the bot — dashboard **[3]
+Restart bot**. Slash commands re-register on startup.
