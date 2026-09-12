@@ -127,9 +127,15 @@ Leave that terminal running while you use the bot. Join a voice channel, then ty
 
 ## Daily use
 
-The bot **starts automatically when you log in** to Windows (a Scheduled Task
-named "Discord Music Bot"). It runs in the background using ~80 MB RAM idle,
-~0% CPU. You normally don't have to do anything.
+If you **enabled auto-start** (during `First Time Setup.bat`, or via the
+dashboard's **[5] Toggle auto-start**), the bot launches on its own each time
+you log in to Windows — via a Scheduled Task named "Discord Music Bot". If you
+didn't, start it yourself from **`Music Bot.bat`** (or `npm start`).
+
+Either way, the bot only runs while **this PC is on** (it's not in the cloud).
+Resource use is light: about **80 MB RAM and ~0% CPU when idle**, rising to
+roughly **170 MB and a few % of one CPU core while a song is actually playing**
+(the extra is the short-lived yt-dlp + ffmpeg that stream each track).
 
 ### Control panel
 Double-click **`Music Bot.bat`** for a menu: Start / Stop / Restart /
