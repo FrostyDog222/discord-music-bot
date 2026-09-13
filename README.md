@@ -23,6 +23,7 @@ itself updated automatically.
 - **Saved playlists** — save the queue, reload it later, view/add/remove songs, with Yes/No confirmations
 - **Multi-server** — one bot serves every server it's in, each with its own queue
 - **Runs itself (Windows)** — auto-starts at login, auto-updates yt-dlp daily, auto-leaves when idle or alone
+- **Self-healing voice** — if the connection drops (network/CPU stall) it reconnects and resumes on its own
 - **Private** — self-hosted; your token and saved playlists never leave your machine
 
 ## ⚡ Get started

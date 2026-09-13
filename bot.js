@@ -134,6 +134,7 @@ function getState(guildId) {
       connection: null, player: null, queue: [], textChannel: null,
       suppressAnnounce: false, volume: 1, loop: 'off', resource: null,
       leaveTimer: null, idleTimer: null, procs: null,
+      voiceChannel: null, leaving: false, reconnecting: false,
     };
     guilds.set(guildId, s);
   }
@@ -180,6 +181,7 @@ async function playNext(guildId) {
 function leaveGuild(guildId, reason) {
   const s = guilds.get(guildId);
   if (!s) return;
+  s.leaving = true; // stop the reconnect logic from fighting the teardown
   if (s.leaveTimer) clearTimeout(s.leaveTimer);
   if (s.idleTimer) clearTimeout(s.idleTimer);
   killProcs(s);
@@ -187,6 +189,45 @@ function leaveGuild(guildId, reason) {
   try { s.connection?.destroy(); } catch { /* ignore */ }
   if (reason) s.textChannel?.send(reason).catch(() => {});
   guilds.delete(guildId);
+}
+
+// Attach resilience handlers to a (re)created voice connection.
+function attachConnectionHandlers(s, guildId) {
+  s.connection.on('error', (e) => console.error('[voice error]', e.message));
+  s.connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    if (s.leaving) return;
+    try {
+      // Transient blip (e.g. CPU/network stall) — let discord.js auto-reconnect.
+      await Promise.race([
+        entersState(s.connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(s.connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+    } catch {
+      // Hard drop — rebuild the connection and resume.
+      await rejoin(s, guildId);
+    }
+  });
+}
+
+// Rebuild a dead connection to the same channel and restart the current track.
+async function rejoin(s, guildId) {
+  if (s.leaving || s.reconnecting || !s.voiceChannel) return;
+  s.reconnecting = true;
+  try { s.connection?.destroy(); } catch { /* ignore */ }
+  try {
+    const ch = s.voiceChannel;
+    s.connection = joinVoiceChannel({
+      channelId: ch.id, guildId: ch.guild.id, adapterCreator: ch.guild.voiceAdapterCreator,
+    });
+    attachConnectionHandlers(s, guildId);
+    s.connection.subscribe(s.player);
+    await entersState(s.connection, VoiceConnectionStatus.Ready, 20_000);
+    if (s.queue.length) { s.suppressAnnounce = true; await playNext(guildId); } // resume
+    s.reconnecting = false;
+  } catch {
+    s.reconnecting = false;
+    leaveGuild(guildId, '⚠️ Lost the voice connection and couldn\'t reconnect. Run /play to start again.');
+  }
 }
 
 // Assumes interaction is already deferred; replies via editReply.
@@ -197,6 +238,8 @@ async function ensureConnection(interaction, s) {
     return false;
   }
   if (!s.connection) {
+    s.voiceChannel = channel; // remembered so we can rejoin after a drop
+    s.leaving = false;
     s.connection = joinVoiceChannel({
       channelId: channel.id,
       guildId: channel.guild.id,
@@ -204,7 +247,7 @@ async function ensureConnection(interaction, s) {
     });
     s.player = createAudioPlayer();
     s.connection.subscribe(s.player);
-    s.connection.on('error', (e) => console.error('[voice error]', e.message));
+    attachConnectionHandlers(s, interaction.guildId);
 
     s.player.on(AudioPlayerStatus.Idle, async () => {
       const suppress = s.suppressAnnounce; // consume: only commands set this
