@@ -156,14 +156,18 @@ async function playNext(guildId) {
   if (s.idleTimer) { clearTimeout(s.idleTimer); s.idleTimer = null; } // a song is starting
   killProcs(s); // stop whatever was playing before
 
-  // yt-dlp streams the audio; our own ffmpeg decodes ANY container/length and
-  // forces Discord's exact format (48 kHz stereo) — this fixes chipmunk/fast
-  // playback and streams hours-long podcasts without pre-downloading.
+  // yt-dlp streams the audio; ffmpeg decodes ANY container/length and outputs
+  // Ogg Opus at Discord's exact format (48 kHz stereo). We pass Opus straight
+  // through (StreamType.OggOpus) — NO JavaScript re-encoding — so playback stays
+  // correct-speed and cheap even under heavy CPU load, and streams hours-long
+  // podcasts without pre-downloading. Volume is applied by ffmpeg's filter.
   const yt = spawn('yt-dlp', ['-f', 'bestaudio/best', '--no-playlist', '-o', '-', next.url],
     { stdio: ['ignore', 'pipe', 'ignore'] });
   const ff = spawn('ffmpeg', [
     '-i', 'pipe:0', '-loglevel', 'error', '-vn',
-    '-ac', '2', '-ar', '48000', '-f', 's16le', 'pipe:1',
+    '-af', `volume=${s.volume}`,
+    '-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-ac', '2',
+    '-f', 'opus', 'pipe:1',
   ], { stdio: ['pipe', 'pipe', 'ignore'] });
   yt.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
   ff.on('error', (e) => console.error('ffmpeg spawn error:', e.message));
@@ -172,8 +176,7 @@ async function playNext(guildId) {
   yt.stdout.pipe(ff.stdin);
   s.procs = [yt, ff];
 
-  const resource = createAudioResource(ff.stdout, { inputType: StreamType.Raw, inlineVolume: true });
-  resource.volume?.setVolume(s.volume);
+  const resource = createAudioResource(ff.stdout, { inputType: StreamType.OggOpus });
   s.resource = resource;
   s.player.play(resource);
 }
@@ -470,8 +473,11 @@ client.on('interactionCreate', async (interaction) => {
   if (cmd === 'volume') {
     const v = interaction.options.getInteger('percent');
     s.volume = v / 100;
-    s.resource?.volume?.setVolume(s.volume);
-    return interaction.reply(`🔊 Volume set to **${v}%**.`);
+    if (s.queue.length && s.connection) {
+      await playNext(interaction.guildId); // restart current track so the new level applies
+      return interaction.reply(`🔊 Volume set to **${v}%**. (Restarted the current track to apply — tip: right-click the bot in voice to set volume just for you, instantly.)`);
+    }
+    return interaction.reply(`🔊 Volume set to **${v}%** — applies to the next track.`);
   }
   if (cmd === 'nowplaying') {
     const cur = s.queue[0];
