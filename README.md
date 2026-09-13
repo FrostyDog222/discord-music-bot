@@ -18,7 +18,7 @@ itself updated automatically.
 
 - **Play anything** — a YouTube URL, a search term, or an entire playlist — including hours-long podcasts/streams (transcoded on the fly, always at the correct speed)
 - **Full queue control** — skip, jump, cut, remove (single or batch `2,3,5`), clear, shuffle
-- **Loop** a song or the whole queue · **volume** control (0–200%)
+- **Loop** a song or the whole queue
 - **Rich "now playing"** cards with duration + thumbnail
 - **Saved playlists** — save the queue, reload it later, view/add/remove songs, with Yes/No confirmations
 - **Multi-server** — one bot serves every server it's in, each with its own queue
@@ -52,7 +52,6 @@ Setup.bat` installs all three for you; the manual steps are further down.
 | `/clear` | Clear the queue (the current song keeps playing) |
 | `/shuffle` | Shuffle the upcoming songs |
 | `/loop off\|song\|queue` | Repeat the current song, the whole queue, or off |
-| `/volume <0-200>` | Set playback volume |
 | `/pause` · `/resume` | Pause / resume playback |
 | `/stop` | Clear the queue and leave the channel |
 | `/save <name>` | Save the current queue as a playlist (asks to confirm; warns on overwrite) |
@@ -67,6 +66,10 @@ Setup.bat` installs all three for you; the manual steps are further down.
 
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
 when it's alone in the channel (5 min) or when the queue finishes (1 min).
+
+> **Volume:** set it per-listener in Discord — right-click the bot in the voice
+> channel and drag the **User Volume** slider. It's local to each person, so
+> everyone picks their own level.
 
 > **Where saved playlists live:** `/save` writes to a `playlists.json` file on
 > the **PC running the bot** — locally only, not in the cloud and not synced.

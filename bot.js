@@ -132,7 +132,7 @@ function getState(guildId) {
   if (!s) {
     s = {
       connection: null, player: null, queue: [], textChannel: null,
-      suppressAnnounce: false, volume: 1, loop: 'off', resource: null,
+      suppressAnnounce: false, loop: 'off',
       leaveTimer: null, idleTimer: null, procs: null,
       voiceChannel: null, leaving: false, reconnecting: false,
     };
@@ -165,7 +165,6 @@ async function playNext(guildId) {
     { stdio: ['ignore', 'pipe', 'ignore'] });
   const ff = spawn('ffmpeg', [
     '-i', 'pipe:0', '-loglevel', 'error', '-vn',
-    '-af', `volume=${s.volume}`,
     '-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-ac', '2',
     '-f', 'opus', 'pipe:1',
   ], { stdio: ['pipe', 'pipe', 'ignore'] });
@@ -176,9 +175,7 @@ async function playNext(guildId) {
   yt.stdout.pipe(ff.stdin);
   s.procs = [yt, ff];
 
-  const resource = createAudioResource(ff.stdout, { inputType: StreamType.OggOpus });
-  s.resource = resource;
-  s.player.play(resource);
+  s.player.play(createAudioResource(ff.stdout, { inputType: StreamType.OggOpus }));
 }
 
 function leaveGuild(guildId, reason) {
@@ -310,8 +307,6 @@ const commands = [
   new SlashCommandBuilder().setName('loop').setDescription('Set loop mode')
     .addStringOption((o) => o.setName('mode').setDescription('off / song / queue').setRequired(true)
       .addChoices({ name: 'off', value: 'off' }, { name: 'song', value: 'song' }, { name: 'queue', value: 'queue' })),
-  new SlashCommandBuilder().setName('volume').setDescription('Set the volume (0-200%)')
-    .addIntegerOption((o) => o.setName('percent').setDescription('0-200').setRequired(true).setMinValue(0).setMaxValue(200)),
   new SlashCommandBuilder().setName('nowplaying').setDescription('Show the current song'),
   new SlashCommandBuilder().setName('stop').setDescription('Stop and leave the channel'),
   new SlashCommandBuilder().setName('queue').setDescription('Show the queue'),
@@ -470,15 +465,6 @@ client.on('interactionCreate', async (interaction) => {
     const label = { off: 'off', song: 'current song 🔂', queue: 'whole queue 🔁' }[s.loop];
     return interaction.reply(`Loop set to **${label}**.`);
   }
-  if (cmd === 'volume') {
-    const v = interaction.options.getInteger('percent');
-    s.volume = v / 100;
-    if (s.queue.length && s.connection) {
-      await playNext(interaction.guildId); // restart current track so the new level applies
-      return interaction.reply(`🔊 Volume set to **${v}%**. (Restarted the current track to apply — tip: right-click the bot in voice to set volume just for you, instantly.)`);
-    }
-    return interaction.reply(`🔊 Volume set to **${v}%** — applies to the next track.`);
-  }
   if (cmd === 'nowplaying') {
     const cur = s.queue[0];
     if (!cur) return interaction.reply('Nothing is playing.');
@@ -625,7 +611,6 @@ client.on('interactionCreate', async (interaction) => {
       '`/clear` — clear the queue',
       '`/shuffle` — shuffle the upcoming songs',
       '`/loop off|song|queue` — set repeat mode',
-      '`/volume <0-200>` — set the volume',
       '`/pause` · `/resume` · `/stop` — pause, resume, or leave',
       '`/save <name>` · `/load <name/#>` · `/playlists` — saved playlists',
       '`/showplaylist <name/#>` — view a playlist\'s songs',
