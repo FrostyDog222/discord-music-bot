@@ -161,8 +161,14 @@ async function playNext(guildId) {
   // through (StreamType.OggOpus) — NO JavaScript re-encoding — so playback stays
   // correct-speed and cheap even under heavy CPU load, and streams hours-long
   // podcasts without pre-downloading.
-  const yt = spawn('yt-dlp', ['-f', 'bestaudio/best', '--no-playlist', '-o', '-', next.url],
-    { stdio: ['ignore', 'pipe', 'ignore'] });
+  // --http-chunk-size uses short ranged requests instead of one long-lived
+  // connection, which YouTube invalidates mid-stream on long tracks (the classic
+  // "audio stops after ~4 min" bug). Retries recover transient fragment drops.
+  const yt = spawn('yt-dlp', [
+    '-f', 'bestaudio/best', '--no-playlist',
+    '--retries', '10', '--fragment-retries', '10', '--http-chunk-size', '10M',
+    '-o', '-', next.url,
+  ], { stdio: ['ignore', 'pipe', 'ignore'] });
   const ff = spawn('ffmpeg', [
     '-i', 'pipe:0', '-loglevel', 'error', '-vn',
     '-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-ac', '2',
