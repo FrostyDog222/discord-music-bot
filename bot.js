@@ -160,7 +160,7 @@ async function playNext(guildId) {
   // Ogg Opus at Discord's exact format (48 kHz stereo). We pass Opus straight
   // through (StreamType.OggOpus) — NO JavaScript re-encoding — so playback stays
   // correct-speed and cheap even under heavy CPU load, and streams hours-long
-  // podcasts without pre-downloading. Volume is applied by ffmpeg's filter.
+  // podcasts without pre-downloading.
   const yt = spawn('yt-dlp', ['-f', 'bestaudio/best', '--no-playlist', '-o', '-', next.url],
     { stdio: ['ignore', 'pipe', 'ignore'] });
   const ff = spawn('ffmpeg', [
@@ -176,6 +176,12 @@ async function playNext(guildId) {
   s.procs = [yt, ff];
 
   s.player.play(createAudioResource(ff.stdout, { inputType: StreamType.OggOpus }));
+}
+
+// Leave soon if nothing is playing (queue finished, or a play failed after joining).
+function scheduleIdleLeave(s, guildId, reason = '👋 Left — the queue finished.') {
+  if (s.idleTimer) clearTimeout(s.idleTimer);
+  s.idleTimer = setTimeout(() => leaveGuild(guildId, reason), IDLE_MS);
 }
 
 function leaveGuild(guildId, reason) {
@@ -261,9 +267,7 @@ async function ensureConnection(interaction, s) {
       if (!suppress && s.loop === 'queue' && finished) s.queue.push(finished);
       if (!s.queue.length) {
         killProcs(s); // nothing more to play — release the stream processes
-        // Queue done — leave if nothing new is added soon.
-        s.idleTimer = setTimeout(
-          () => leaveGuild(interaction.guildId, '👋 Left — the queue finished.'), IDLE_MS);
+        scheduleIdleLeave(s, interaction.guildId); // leave if nothing new is added soon
         return;
       }
       await playNext(interaction.guildId);
@@ -374,6 +378,7 @@ client.on('interactionCreate', async (interaction) => {
   const cmd = interaction.commandName;
   s.textChannel = interaction.channel; // post auto-advance messages here
 
+  try {
   if (cmd === 'play') {
     await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
@@ -391,6 +396,8 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.editReply(`➕ Added **${tracks.length}** songs from the playlist.${startNow ? ` Now playing **${tracks[0].title}**` : ''}`);
     } catch (e) {
       console.error(e);
+      // If the bot joined but nothing is queued, don't sit idle forever.
+      if (!s.queue.length && s.connection) scheduleIdleLeave(s, interaction.guildId, '👋 Left — nothing to play.');
       return interaction.editReply('Something broke fetching that track.');
     }
   }
@@ -619,6 +626,13 @@ client.on('interactionCreate', async (interaction) => {
       '`/deleteplaylist <name/# [,...]>` · `/deleteallplaylists` — delete saved playlists',
       '`/help` — this message',
     ].join('\n'));
+  }
+  } catch (e) {
+    console.error(`Command /${cmd} failed:`, e);
+    try {
+      if (interaction.deferred) await interaction.editReply('⚠️ Something went wrong with that command.');
+      else if (!interaction.replied) await interaction.reply('⚠️ Something went wrong with that command.');
+    } catch { /* nothing more we can do */ }
   }
 });
 
