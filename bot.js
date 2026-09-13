@@ -19,6 +19,12 @@ const IDLE_MS = 60 * 1000;      // auto-leave after 1 min with nothing playing
 const PLAYLISTS_FILE = path.join(__dirname, 'playlists.json');
 let playlists = {};
 try { playlists = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8')); } catch { /* none yet */ }
+
+// Settings (toggled from the dashboard). keepAwake defaults ON so friends can
+// listen while you're away with the PC on.
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+let config = { keepAwake: true };
+try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* defaults */ }
 function savePlaylists() {
   try { fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(playlists)); }
   catch (e) { console.error('playlist save failed:', e.message); }
@@ -564,7 +570,7 @@ process.on('unhandledRejection', (e) => console.error('Unhandled:', e?.message |
 // Windows: keep the PC awake while the bot runs, so sleep doesn't pause playback.
 // The helper watches this process and exits (releasing the request) when the bot stops.
 // Encoded command avoids quoting issues with the embedded C# signature.
-if (process.platform === 'win32') {
+if (process.platform === 'win32' && config.keepAwake) {
   const cmd = `$p=${process.pid};$s='[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);';$api=Add-Type -MemberDefinition $s -Name Pw -Namespace Win32 -PassThru;while(Get-Process -Id $p -ErrorAction SilentlyContinue){[void]$api::SetThreadExecutionState(2147483649);Start-Sleep -Seconds 50}`;
   try {
     const encoded = Buffer.from(cmd, 'utf16le').toString('base64');

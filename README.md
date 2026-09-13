@@ -137,9 +137,11 @@ Resource use is light: about **80 MB RAM and ~0% CPU when idle**, rising to
 roughly **170 MB and a few % of one CPU core while a song is actually playing**
 (the extra is the short-lived yt-dlp + ffmpeg that stream each track).
 
-> **Sleep:** while the bot is running it keeps the PC awake so playback isn't
-> interrupted (the monitor can still turn off; only *system* sleep is held). The
-> moment the bot stops, normal sleep behavior returns.
+> **Sleep:** by default, while the bot runs it keeps the PC awake so playback
+> isn't interrupted — handy if friends want music while you're away with the PC
+> on (the monitor can still turn off; only *system* sleep is held). Toggle it
+> anytime with **Music Bot.bat → [6] Toggle keep-PC-awake**; when off, the PC
+> sleeps normally. The setting is stored in `config.json`.
 
 ### Control panel
 Double-click **`Music Bot.bat`** for a menu: Start / Stop / Restart /

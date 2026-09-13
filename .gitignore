@@ -3,3 +3,4 @@ node_modules/
 bot.log
 bot.err
 playlists.json
+config.json

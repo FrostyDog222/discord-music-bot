@@ -35,6 +35,17 @@ function Disable-AutoStart {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+$ConfigFile = Join-Path $PSScriptRoot 'config.json'
+function Get-KeepAwake {
+  if (Test-Path $ConfigFile) {
+    try { return [bool](Get-Content $ConfigFile -Raw | ConvertFrom-Json).keepAwake } catch { return $true }
+  }
+  return $true  # default ON
+}
+function Set-KeepAwake($val) {
+  (@{ keepAwake = [bool]$val } | ConvertTo-Json) | Set-Content $ConfigFile -Encoding UTF8
+}
+
 function Get-InviteLink {
   # The Application ID is the first token segment (base64url), so we can build
   # the invite link straight from .env — no hardcoded ID.
@@ -53,15 +64,18 @@ while ($true) {
   Write-Host "================================`n"
   if (Get-Bot) { Write-Host "  Status: RUNNING" -ForegroundColor Green }
   else         { Write-Host "  Status: stopped" -ForegroundColor DarkGray }
-  if (Get-AutoStart) { Write-Host "  Auto-start at login: [x] ON`n" -ForegroundColor Green }
-  else               { Write-Host "  Auto-start at login: [ ] off`n" -ForegroundColor DarkGray }
+  if (Get-AutoStart) { Write-Host "  Auto-start at login: [x] ON" -ForegroundColor Green }
+  else               { Write-Host "  Auto-start at login: [ ] off" -ForegroundColor DarkGray }
+  if (Get-KeepAwake) { Write-Host "  Keep PC awake:       [x] ON`n" -ForegroundColor Green }
+  else               { Write-Host "  Keep PC awake:       [ ] off`n" -ForegroundColor DarkGray }
   Write-Host "  [1] Start bot"
   Write-Host "  [2] Stop bot"
   Write-Host "  [3] Restart bot"
   Write-Host "  [4] Update yt-dlp now  (use if YouTube songs stop playing)"
   Write-Host "  [5] Toggle auto-start at login"
-  Write-Host "  [6] Show invite link"
-  Write-Host "  [7] Exit  (bot keeps running)`n"
+  Write-Host "  [6] Toggle keep-PC-awake"
+  Write-Host "  [7] Show invite link"
+  Write-Host "  [8] Exit  (bot keeps running)`n"
   switch (Read-Host "Choose") {
     '1' {
       if (Get-Bot) { Write-Host "Already running." -ForegroundColor Yellow }
@@ -83,11 +97,18 @@ while ($true) {
       Start-Sleep 2
     }
     '6' {
+      $new = -not (Get-KeepAwake)
+      Set-KeepAwake $new
+      Write-Host ("Keep PC awake set to " + $(if ($new) { 'ON' } else { 'OFF' }) + ".") -ForegroundColor Green
+      if (Get-Bot) { Stop-Bot; Start-Sleep 1; Start-Bot; Write-Host "Restarted the bot to apply it." -ForegroundColor Green }
+      Start-Sleep 2
+    }
+    '7' {
       $link = Get-InviteLink
       if ($link) { Write-Host "`nInvite this bot to a server:`n$link" -ForegroundColor Cyan }
       else { Write-Host "`nCouldn't read the token from .env." -ForegroundColor Yellow }
       Read-Host "`nPress Enter"
     }
-    '7' { exit }
+    '8' { exit }
   }
 }
