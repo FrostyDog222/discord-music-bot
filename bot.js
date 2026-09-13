@@ -9,7 +9,7 @@ const {
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
-  AudioPlayerStatus, VoiceConnectionStatus, entersState,
+  AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType,
 } = require('@discordjs/voice');
 
 const LEAVE_MS = 5 * 60 * 1000; // auto-leave after 5 min alone in the channel
@@ -133,11 +133,19 @@ function getState(guildId) {
     s = {
       connection: null, player: null, queue: [], textChannel: null,
       suppressAnnounce: false, volume: 1, loop: 'off', resource: null,
-      leaveTimer: null, idleTimer: null,
+      leaveTimer: null, idleTimer: null, procs: null,
     };
     guilds.set(guildId, s);
   }
   return s;
+}
+
+// Kill the yt-dlp/ffmpeg processes feeding the current track (avoids orphans,
+// important for long podcasts and skips).
+function killProcs(s) {
+  if (!s.procs) return;
+  for (const p of s.procs) { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
+  s.procs = null;
 }
 
 async function playNext(guildId) {
@@ -145,11 +153,25 @@ async function playNext(guildId) {
   const next = s.queue[0];
   if (!next) return; // nothing queued; stay connected, idle
   if (s.idleTimer) { clearTimeout(s.idleTimer); s.idleTimer = null; } // a song is starting
-  // yt-dlp streams best audio to stdout; ffmpeg (via createAudioResource) transcodes.
-  const yt = spawn('yt-dlp', ['-f', 'bestaudio', '--no-playlist', '-o', '-', next.url],
+  killProcs(s); // stop whatever was playing before
+
+  // yt-dlp streams the audio; our own ffmpeg decodes ANY container/length and
+  // forces Discord's exact format (48 kHz stereo) — this fixes chipmunk/fast
+  // playback and streams hours-long podcasts without pre-downloading.
+  const yt = spawn('yt-dlp', ['-f', 'bestaudio/best', '--no-playlist', '-o', '-', next.url],
     { stdio: ['ignore', 'pipe', 'ignore'] });
+  const ff = spawn('ffmpeg', [
+    '-i', 'pipe:0', '-loglevel', 'error', '-vn',
+    '-ac', '2', '-ar', '48000', '-f', 's16le', 'pipe:1',
+  ], { stdio: ['pipe', 'pipe', 'ignore'] });
   yt.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
-  const resource = createAudioResource(yt.stdout, { inlineVolume: true });
+  ff.on('error', (e) => console.error('ffmpeg spawn error:', e.message));
+  yt.stdout.on('error', () => {});   // ignore EPIPE when a track is skipped
+  ff.stdin.on('error', () => {});
+  yt.stdout.pipe(ff.stdin);
+  s.procs = [yt, ff];
+
+  const resource = createAudioResource(ff.stdout, { inputType: StreamType.Raw, inlineVolume: true });
   resource.volume?.setVolume(s.volume);
   s.resource = resource;
   s.player.play(resource);
@@ -160,6 +182,7 @@ function leaveGuild(guildId, reason) {
   if (!s) return;
   if (s.leaveTimer) clearTimeout(s.leaveTimer);
   if (s.idleTimer) clearTimeout(s.idleTimer);
+  killProcs(s);
   try { s.player?.stop(); } catch { /* ignore */ }
   try { s.connection?.destroy(); } catch { /* ignore */ }
   if (reason) s.textChannel?.send(reason).catch(() => {});
@@ -194,6 +217,7 @@ async function ensureConnection(interaction, s) {
       const finished = s.queue.shift();
       if (!suppress && s.loop === 'queue' && finished) s.queue.push(finished);
       if (!s.queue.length) {
+        killProcs(s); // nothing more to play — release the stream processes
         // Queue done — leave if nothing new is added soon.
         s.idleTimer = setTimeout(
           () => leaveGuild(interaction.guildId, '👋 Left — the queue finished.'), IDLE_MS);

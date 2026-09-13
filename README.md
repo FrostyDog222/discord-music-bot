@@ -16,7 +16,7 @@ itself updated automatically.
 
 ## ✨ Features
 
-- **Play anything** — a YouTube URL, a search term, or an entire playlist
+- **Play anything** — a YouTube URL, a search term, or an entire playlist — including hours-long podcasts/streams (transcoded on the fly, always at the correct speed)
 - **Full queue control** — skip, jump, cut, remove (single or batch `2,3,5`), clear, shuffle
 - **Loop** a song or the whole queue · **volume** control (0–200%)
 - **Rich "now playing"** cards with duration + thumbnail
