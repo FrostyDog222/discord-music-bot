@@ -20,10 +20,15 @@ function Get-AutoStart {
   [bool](Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)
 }
 function Enable-AutoStart {
-  $node = (Get-Command node).Source
-  $a = New-ScheduledTaskAction -Execute $node -Argument 'bot.js' -WorkingDirectory $PSScriptRoot
+  # Launch the bot DETACHED so the Task Scheduler host tearing down can't kill it,
+  # with ffmpeg/yt-dlp on PATH and logs captured.
+  $dir = $PSScriptRoot
+  $cmd = "`$env:Path=[Environment]::GetEnvironmentVariable('Path','User')+';'+[Environment]::GetEnvironmentVariable('Path','Machine'); Set-Location '$dir'; Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden -RedirectStandardOutput '$dir\bot.log' -RedirectStandardError '$dir\bot.err'"
+  $psArgs = '-NoProfile -WindowStyle Hidden -Command "' + $cmd + '"'
+  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
   $t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+  $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $TaskName -Action $a -Trigger $t -Settings $s -Force | Out-Null
 }
 function Disable-AutoStart {

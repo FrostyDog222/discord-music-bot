@@ -33,10 +33,13 @@ if (-not (Test-Path .env)) {
 
 $ans = Read-Host "`nAuto-start the bot at login + daily yt-dlp update? (y/n)"
 if ($ans -eq 'y') {
-  $node = (Get-Command node).Source
-  $a1 = New-ScheduledTaskAction -Execute $node -Argument 'bot.js' -WorkingDirectory $PSScriptRoot
+  $dir = $PSScriptRoot
+  $cmd = "`$env:Path=[Environment]::GetEnvironmentVariable('Path','User')+';'+[Environment]::GetEnvironmentVariable('Path','Machine'); Set-Location '$dir'; Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden -RedirectStandardOutput '$dir\bot.log' -RedirectStandardError '$dir\bot.err'"
+  $psArgs = '-NoProfile -WindowStyle Hidden -Command "' + $cmd + '"'
+  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
   $t1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $s1 = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+  $s1 = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName 'Discord Music Bot' -Action $a1 -Trigger $t1 -Settings $s1 -Force | Out-Null
 
   $a2 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command "winget upgrade --id yt-dlp.yt-dlp --silent --accept-source-agreements --accept-package-agreements"'

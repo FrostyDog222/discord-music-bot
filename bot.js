@@ -561,4 +561,19 @@ client.on('interactionCreate', async (interaction) => {
 client.on('error', (e) => console.error('Client error:', e.message));
 process.on('unhandledRejection', (e) => console.error('Unhandled:', e?.message || e));
 
+// Windows: keep the PC awake while the bot runs, so sleep doesn't pause playback.
+// The helper watches this process and exits (releasing the request) when the bot stops.
+// Encoded command avoids quoting issues with the embedded C# signature.
+if (process.platform === 'win32') {
+  const cmd = `$p=${process.pid};$s='[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);';$api=Add-Type -MemberDefinition $s -Name Pw -Namespace Win32 -PassThru;while(Get-Process -Id $p -ErrorAction SilentlyContinue){[void]$api::SetThreadExecutionState(2147483649);Start-Sleep -Seconds 50}`;
+  try {
+    const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
+    // NOTE: not detached — a detached+ignored child dies instantly on Windows here.
+    // The helper self-exits when it sees this process gone (watches our PID).
+    const ka = spawn('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
+      { stdio: 'ignore' });
+    ka.unref();
+  } catch (e) { console.error('keep-awake failed:', e.message); }
+}
+
 client.login(process.env.TOKEN);
