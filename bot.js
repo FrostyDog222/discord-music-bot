@@ -47,6 +47,11 @@ function announceChannel(guildId, s) {
   if (id) { const ch = client.channels.cache.get(id); if (ch) return ch; }
   return s?.textChannel || null;
 }
+// Post a "now playing" card to the announcement channel (used for every song
+// that starts: first /play, /load, and auto-advance).
+function announceNowPlaying(guildId, s, track) {
+  announceChannel(guildId, s)?.send({ embeds: [nowPlayingEmbed(track)] }).catch(() => {});
+}
 
 // Parse "1,2 3" into a unique list of positive integers.
 function parseNumberList(input) {
@@ -295,9 +300,7 @@ async function ensureConnection(interaction, s) {
         return;
       }
       await playNext(interaction.guildId);
-      if (!suppress) {
-        announceChannel(interaction.guildId, s)?.send({ embeds: [nowPlayingEmbed(s.queue[0])] }).catch(() => {});
-      }
+      if (!suppress) announceNowPlaying(interaction.guildId, s, s.queue[0]);
     });
     s.player.on('error', (e) => {
       console.error('Player error:', e.message);
@@ -420,10 +423,16 @@ client.on('interactionCreate', async (interaction) => {
       const startNow = s.queue.length === 0;
       const by = interaction.user.username;
       s.queue.push(...tracks.map((t) => ({ ...t, requestedBy: by })));
-      if (startNow) await playNext(interaction.guildId);
+      const dedicated = Boolean(guildSettings[interaction.guildId]?.channel);
+      if (startNow) {
+        await playNext(interaction.guildId);
+        if (dedicated) announceNowPlaying(interaction.guildId, s, tracks[0]); // embed to the set channel
+      }
       if (tracks.length === 1) {
-        if (startNow) return interaction.editReply({ embeds: [nowPlayingEmbed(tracks[0])] });
-        return interaction.editReply(`➕ Queued **${tracks[0].title}** (position ${s.queue.length})`);
+        if (startNow && !dedicated) return interaction.editReply({ embeds: [nowPlayingEmbed(tracks[0])] });
+        return interaction.editReply(startNow
+          ? `▶️ Playing **${tracks[0].title}**`
+          : `➕ Queued **${tracks[0].title}** (position ${s.queue.length})`);
       }
       return interaction.editReply(`➕ Added **${tracks.length}** songs from the playlist.${startNow ? ` Now playing **${tracks[0].title}**` : ''}`);
     } catch (e) {
@@ -443,7 +452,10 @@ client.on('interactionCreate', async (interaction) => {
     const startNow = s.queue.length === 0;
     const by = interaction.user.username;
     s.queue.push(...saved.map((t) => ({ ...t, requestedBy: by })));
-    if (startNow) await playNext(interaction.guildId);
+    if (startNow) {
+      await playNext(interaction.guildId);
+      if (guildSettings[interaction.guildId]?.channel) announceNowPlaying(interaction.guildId, s, saved[0]);
+    }
     return interaction.editReply(`📂 Loaded **${saved.length}** songs from **${name}**.${startNow ? ` Now playing **${saved[0].title}**` : ''}`);
   }
 
