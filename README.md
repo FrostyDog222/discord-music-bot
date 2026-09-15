@@ -21,6 +21,9 @@ itself updated automatically.
 - **Loop** a song or the whole queue
 - **Rich "now playing"** cards with duration + thumbnail
 - **Saved playlists** — save the queue, reload it later, view/add/remove songs, with Yes/No confirmations
+- **Live status** — the bot's presence shows the current song (falls back to `/help` when idle)
+- **Dedicated log channel** — route now-playing + activity to a channel (`/setchannel` or `/createchannel`) to keep the main chat clean
+- **Tidy chat** — `/autodelete` clears the bot's command replies after N seconds
 - **Multi-server** — one bot serves every server it's in, each with its own queue
 - **Runs itself (Windows)** — auto-starts at login, auto-updates yt-dlp daily, auto-leaves when idle or alone
 - **Self-healing voice** — if the connection drops (network/CPU stall) it reconnects and resumes on its own
@@ -70,6 +73,11 @@ Setup.bat` installs all three for you; the manual steps are further down.
 
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
 when it's alone in the channel (5 min) or when the queue finishes (1 min).
+
+> **Keeping chat clean:** commands work in any channel. Set a log channel with
+> `/setchannel` (or `/createchannel`) and the full now-playing/activity log goes
+> there while the main chat only shows brief command replies. Turn on
+> `/autodelete <seconds>` and those replies clear themselves after the delay.
 
 > **Volume:** set it per-listener in Discord — right-click the bot in the voice
 > channel and drag the **User Volume** slider. It's local to each person, so
