@@ -58,7 +58,8 @@ function refreshActivity() {
   if (!client.user) return;
   for (const st of guilds.values()) {
     if (st.queue.length) {
-      return client.user.setActivity(st.queue[0].title.slice(0, 120), { type: ActivityType.Listening });
+      const title = (st.queue[0].title || 'music').slice(0, 120);
+      return client.user.setActivity(title, { type: ActivityType.Listening });
     }
   }
   client.user.setActivity('/help', { type: ActivityType.Listening });
@@ -110,7 +111,8 @@ function fmtDuration(sec) {
 
 function nowPlayingEmbed(track, heading = 'Now playing') {
   const e = new EmbedBuilder().setColor(0x1db954).setAuthor({ name: heading })
-    .setTitle(track.title || 'Unknown').setURL(track.url || null);
+    .setTitle(track.title || 'Unknown');
+  if (/^https?:\/\//.test(track.url || '')) e.setURL(track.url);
   const dur = fmtDuration(track.duration);
   if (dur) e.addFields({ name: 'Duration', value: dur, inline: true });
   if (track.requestedBy) e.addFields({ name: 'Requested by', value: track.requestedBy, inline: true });
@@ -395,7 +397,7 @@ const commands = [
   new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
     .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
   new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete the bot\'s command replies after N seconds (0 = off)')
-    .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds, e.g. 30 (0 turns it off)').setRequired(true).setMinValue(0).setMaxValue(3600)),
+    .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds, e.g. 30 (0 off, max 900)').setRequired(true).setMinValue(0).setMaxValue(900)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -527,7 +529,8 @@ client.on('interactionCreate', async (interaction) => {
     return respond(interaction, s, `🗑️ Removed ${removed.length} song(s):\n${removed.map((t) => `• ${t.title}`).join('\n')}`.slice(0, 1900));
   }
   if (cmd === 'clear') {
-    const n = Math.max(0, s.queue.length - 1);
+    if (s.queue.length <= 1) return respond(interaction, s, 'The queue is already empty.', false);
+    const n = s.queue.length - 1;
     s.queue = s.queue.slice(0, 1); // keep the current song
     return respond(interaction, s, `🧹 Cleared ${n} song(s). The current song keeps playing.`);
   }
