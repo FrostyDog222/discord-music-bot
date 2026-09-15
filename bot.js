@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActivityType, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, MessageFlags, ChannelType,
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
@@ -354,7 +354,9 @@ const commands = [
   new SlashCommandBuilder().setName('addtoplaylist').setDescription('Add a song to a saved playlist')
     .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true))
     .addStringOption((o) => o.setName('song').setDescription('URL or search (defaults to the current song)').setRequired(false)),
-  new SlashCommandBuilder().setName('setchannel').setDescription('Post now-playing/announcements in THIS channel'),
+  new SlashCommandBuilder().setName('setchannel').setDescription('Choose the channel for now-playing/announcements')
+    .addChannelOption((o) => o.setName('channel').setDescription('Channel (default: the current one)')
+      .addChannelTypes(ChannelType.GuildText).setRequired(false)),
   new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)'),
   new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
     .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
@@ -636,9 +638,11 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to set this.', flags: MessageFlags.Ephemeral });
     }
-    logChannels[interaction.guildId] = interaction.channelId;
+    const target = interaction.options.getChannel('channel') || interaction.channel;
+    logChannels[interaction.guildId] = target.id;
     saveLogChannels();
-    return interaction.reply(`✅ I'll post now-playing and announcements in <#${interaction.channelId}> from now on. (Commands still work in any channel.)`);
+    const canSend = target.permissionsFor(client.user)?.has(PermissionFlagsBits.SendMessages);
+    return interaction.reply(`✅ I'll post now-playing and announcements in <#${target.id}> from now on. (Commands still work in any channel.)${canSend ? '' : '\n⚠️ Heads up: I may not have permission to send messages there — give me access to that channel.'}`);
   }
   if (cmd === 'resetchannel') {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
