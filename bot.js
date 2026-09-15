@@ -47,10 +47,22 @@ function announceChannel(guildId, s) {
   if (id) { const ch = client.channels.cache.get(id); if (ch) return ch; }
   return s?.textChannel || null;
 }
-// Post a "now playing" card to the announcement channel (used for every song
-// that starts: first /play, /load, and auto-advance).
+// Send an announcement (now-playing / leave). It persists in a dedicated log
+// channel; if it lands in the command channel (no log channel) and /autodelete
+// is on, it self-deletes after the delay so nothing lingers there.
+function sendAnnounce(guildId, s, payload) {
+  const ch = announceChannel(guildId, s);
+  if (!ch) return;
+  const hasLog = Boolean(guildSettings[guildId]?.channel);
+  ch.send(payload).then((msg) => {
+    if (hasLog) return; // keep it — it's the log
+    const secs = Number(guildSettings[guildId]?.autoDelete) || 0;
+    if (secs > 0) setTimeout(() => msg.delete().catch(() => {}), secs * 1000);
+  }).catch(() => {});
+}
+// Post a "now playing" card (first /play, /load, and auto-advance).
 function announceNowPlaying(guildId, s, track) {
-  announceChannel(guildId, s)?.send({ embeds: [nowPlayingEmbed(track)] }).catch(() => {});
+  sendAnnounce(guildId, s, { embeds: [nowPlayingEmbed(track)] });
 }
 
 // Presence: show a currently-playing song, else fall back to /help.
@@ -252,7 +264,7 @@ function leaveGuild(guildId, reason) {
   killProcs(s);
   try { s.player?.stop(); } catch { /* ignore */ }
   try { s.connection?.destroy(); } catch { /* ignore */ }
-  if (reason) announceChannel(guildId, s)?.send(reason).catch(() => {});
+  if (reason) sendAnnounce(guildId, s, reason);
   guilds.delete(guildId);
   refreshActivity(); // back to /help (unless another server is playing)
 }
