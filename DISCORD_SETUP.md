@@ -30,7 +30,8 @@ goes in `.env`) and invite the bot. Takes about 5 minutes.
 
 **Easiest — use your bot's ready-made invite link** (permissions baked in, so
 whoever opens it is automatically prompted to grant exactly what the bot needs
-— View Channels, Send Messages, Connect, Speak). Get your link from:
+— View Channels, Send Messages, Connect, Speak, and Manage Channels for the
+optional `/createchannel`). Get your link from:
 
 - the dashboard: **Music Bot.bat → [6] Show invite link**, or
 - the console / `bot.log` when the bot starts (it prints "Invite link: ...").
@@ -38,7 +39,7 @@ whoever opens it is automatically prompted to grant exactly what the bot needs
 It looks like this (with **your** Application ID filled in):
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=3148800&scope=bot+applications.commands
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=3148816&scope=bot+applications.commands
 ```
 
 Open it → pick a server → **Authorize** (solve the captcha if shown). Discord
@@ -59,7 +60,8 @@ Repeat for each server you want the bot in.
 
 1. Left sidebar → **OAuth2** → **OAuth2 URL Generator**.
 2. Scopes: `bot`, `applications.commands`.
-3. Bot Permissions: **View Channels**, **Send Messages**, **Connect**, **Speak**.
+3. Bot Permissions: **View Channels**, **Send Messages**, **Connect**, **Speak**,
+   and **Manage Channels** (optional — only for `/createchannel`).
 4. Copy the generated URL at the bottom, open it, authorize.
 </details>
 

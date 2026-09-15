@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActivityType, EmbedBuilder,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, MessageFlags,
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
@@ -28,6 +28,23 @@ try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) 
 function savePlaylists() {
   try { fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(playlists)); }
   catch (e) { console.error('playlist save failed:', e.message); }
+}
+
+// Optional dedicated announcement channel per guild ({ guildId: channelId }).
+// Separate file so the dashboard's config.json writes never clobber it.
+const CHANNELS_FILE = path.join(__dirname, 'channels.json');
+let logChannels = {};
+try { logChannels = JSON.parse(fs.readFileSync(CHANNELS_FILE, 'utf8')); } catch { /* none yet */ }
+function saveLogChannels() {
+  try { fs.writeFileSync(CHANNELS_FILE, JSON.stringify(logChannels)); }
+  catch (e) { console.error('channels save failed:', e.message); }
+}
+// Where the bot posts now-playing/leave messages: the set channel, else the
+// channel the last command came from.
+function announceChannel(guildId, s) {
+  const id = logChannels[guildId];
+  if (id) { const ch = client.channels.cache.get(id); if (ch) return ch; }
+  return s?.textChannel || null;
 }
 
 // Parse "1,2 3" into a unique list of positive integers.
@@ -199,7 +216,7 @@ function leaveGuild(guildId, reason) {
   killProcs(s);
   try { s.player?.stop(); } catch { /* ignore */ }
   try { s.connection?.destroy(); } catch { /* ignore */ }
-  if (reason) s.textChannel?.send(reason).catch(() => {});
+  if (reason) announceChannel(guildId, s)?.send(reason).catch(() => {});
   guilds.delete(guildId);
 }
 
@@ -278,7 +295,7 @@ async function ensureConnection(interaction, s) {
       }
       await playNext(interaction.guildId);
       if (!suppress) {
-        s.textChannel?.send({ embeds: [nowPlayingEmbed(s.queue[0])] }).catch(() => {});
+        announceChannel(interaction.guildId, s)?.send({ embeds: [nowPlayingEmbed(s.queue[0])] }).catch(() => {});
       }
     });
     s.player.on('error', (e) => {
@@ -337,6 +354,10 @@ const commands = [
   new SlashCommandBuilder().setName('addtoplaylist').setDescription('Add a song to a saved playlist')
     .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true))
     .addStringOption((o) => o.setName('song').setDescription('URL or search (defaults to the current song)').setRequired(false)),
+  new SlashCommandBuilder().setName('setchannel').setDescription('Post now-playing/announcements in THIS channel'),
+  new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)'),
+  new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
+    .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -354,7 +375,7 @@ client.once('ready', async () => {
   for (const [id] of client.guilds.cache) await registerCommands(id);
   client.user.setActivity('/help', { type: ActivityType.Listening });
   console.log(`Logged in as ${client.user.tag} (${client.guilds.cache.size} server(s))`);
-  const invite = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=3148800&scope=bot+applications.commands`;
+  const invite = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=3148816&scope=bot+applications.commands`;
   console.log(`Invite link: ${invite}`);
 });
 
@@ -611,6 +632,38 @@ client.on('interactionCreate', async (interaction) => {
       : `➕ Added **${toAdd.length}** songs to **${name}** (now ${g[name].length} songs).`;
     return song ? interaction.editReply(reply) : interaction.reply(reply);
   }
+  if (cmd === 'setchannel') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: 'You need the **Manage Channels** permission to set this.', flags: MessageFlags.Ephemeral });
+    }
+    logChannels[interaction.guildId] = interaction.channelId;
+    saveLogChannels();
+    return interaction.reply(`✅ I'll post now-playing and announcements in <#${interaction.channelId}> from now on. (Commands still work in any channel.)`);
+  }
+  if (cmd === 'resetchannel') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
+    }
+    delete logChannels[interaction.guildId];
+    saveLogChannels();
+    return interaction.reply('✅ Announcements will now go to wherever the command is used (default).');
+  }
+  if (cmd === 'createchannel') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: 'You need the **Manage Channels** permission to do this.', flags: MessageFlags.Ephemeral });
+    }
+    await interaction.deferReply();
+    const name = (interaction.options.getString('name') || 'music-bot').slice(0, 90);
+    try {
+      const ch = await interaction.guild.channels.create({ name, reason: 'Music bot announcements channel' });
+      logChannels[interaction.guildId] = ch.id;
+      saveLogChannels();
+      return interaction.editReply(`✅ Created <#${ch.id}> — I'll post now-playing and announcements there.`);
+    } catch (e) {
+      console.error('createchannel failed:', e.message);
+      return interaction.editReply('I couldn\'t create a channel — I need the **Manage Channels** permission. Re-invite me with the updated link (dashboard → **Show invite link**) or give my role Manage Channels, then try again. Or make a channel yourself and run **/setchannel** in it.');
+    }
+  }
   if (cmd === 'help') {
     return interaction.reply([
       '**🎵 Music bot commands**',
@@ -630,6 +683,7 @@ client.on('interactionCreate', async (interaction) => {
       '`/addtoplaylist <name> [song]` — add a song to a playlist',
       '`/removefromplaylist <name> <n[,n...] or title>` — remove song(s) from a playlist',
       '`/deleteplaylist <name/# [,...]>` · `/deleteallplaylists` — delete saved playlists',
+      '`/setchannel` · `/resetchannel` · `/createchannel` — where the bot posts announcements',
       '`/help` — this message',
     ].join('\n'));
   }

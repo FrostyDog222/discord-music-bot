@@ -54,7 +54,7 @@ function Get-InviteLink {
   $b64 = ($line -replace '^TOKEN=', '').Trim().Split('.')[0].Replace('-', '+').Replace('_', '/')
   switch ($b64.Length % 4) { 2 { $b64 += '==' } 3 { $b64 += '=' } }
   try { $id = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) } catch { return $null }
-  "https://discord.com/oauth2/authorize?client_id=$id&permissions=3148800&scope=bot+applications.commands"
+  "https://discord.com/oauth2/authorize?client_id=$id&permissions=3148816&scope=bot+applications.commands"
 }
 
 while ($true) {

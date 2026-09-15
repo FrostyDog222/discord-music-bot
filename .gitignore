@@ -4,3 +4,4 @@ bot.log
 bot.err
 playlists.json
 config.json
+channels.json

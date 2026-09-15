@@ -62,6 +62,9 @@ Setup.bat` installs all three for you; the manual steps are further down.
 | `/removefromplaylist <name> <n[,n...] or title>` | Remove song(s) from a playlist |
 | `/deleteplaylist <name/# [,...]>` | Delete one or more saved playlists (asks to confirm) |
 | `/deleteallplaylists` | Delete all saved playlists (asks to confirm) |
+| `/setchannel` | Post now-playing/announcements in the current channel (needs Manage Channels) |
+| `/resetchannel` | Go back to posting wherever the command is used |
+| `/createchannel [name]` | Bot creates a channel and posts there (needs Manage Channels perm on the bot) |
 | `/help` | Show all commands in Discord |
 
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
