@@ -75,10 +75,11 @@ The live queue lives in memory only (resets on restart). The bot **auto-leaves**
 when it's alone in the channel (5 min) or when the queue finishes (1 min).
 
 > **Keeping chat clean:** commands work in any channel. Set a log channel with
-> `/setchannel` (or `/createchannel`) and the full now-playing/activity log goes
-> there — while the brief command replies in the command channel **auto-clear on
-> their own** (a few seconds by default; set a custom delay with `/autodelete`).
-> With no log channel, replies stay unless you turn on `/autodelete <seconds>`.
+> `/setchannel` (or `/createchannel`) to keep a persistent now-playing/activity
+> log there. Separately, `/autodelete <seconds>` is the on/off switch for the
+> command channel: turn it **on** and the bot's messages there clear after the
+> delay; turn it **off** (`0`) and they stay. The log channel keeps its copy
+> either way.
 
 > **Volume:** set it per-listener in Discord — right-click the bot in the voice
 > channel and drag the **User Volume** slider. It's local to each person, so
