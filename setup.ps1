@@ -31,16 +31,18 @@ if (-not (Test-Path .env)) {
   Write-Host "`n.env already exists - leaving it alone." -ForegroundColor Yellow
 }
 
-$ans = Read-Host "`nAuto-start the bot at login + daily yt-dlp update? (y/n)"
+$ans = Read-Host "`nAuto-start + keep-alive at login, and daily yt-dlp update? (y/n)"
 if ($ans -eq 'y') {
-  $dir = $PSScriptRoot
-  $cmd = "`$env:Path=[Environment]::GetEnvironmentVariable('Path','User')+';'+[Environment]::GetEnvironmentVariable('Path','Machine'); Set-Location '$dir'; Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden -RedirectStandardOutput '$dir\bot.log' -RedirectStandardError '$dir\bot.err'"
-  $psArgs = '-NoProfile -WindowStyle Hidden -Command "' + $cmd + '"'
-  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
+  # Watchdog: runs at login and every 5 min, (re)starting the bot if it's not
+  # running (unless deliberately stopped via the dashboard). Self-heals crashes.
+  $wd = Join-Path $PSScriptRoot 'watchdog.ps1'
+  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wd + '"')
   $t1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $s1 = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName 'Discord Music Bot' -Action $a1 -Trigger $t1 -Settings $s1 -Force | Out-Null
+  $t1b = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+  $s1 = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName 'Discord Music Bot' -Action $a1 -Trigger @($t1, $t1b) -Settings $s1 -Force | Out-Null
 
   $a2 = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command "winget upgrade --id yt-dlp.yt-dlp --silent --accept-source-agreements --accept-package-agreements"'
   $t2 = New-ScheduledTaskTrigger -Daily -At 5am

@@ -6,12 +6,16 @@ function Get-Bot {
     Where-Object { $_.CommandLine -like '*bot.js*' }
 }
 
+$StopFlag = Join-Path $PSScriptRoot '.stopped'
+
 function Start-Bot {
-  # Detached + hidden: keeps running after this window closes.
-  Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden
+  Remove-Item $StopFlag -ErrorAction SilentlyContinue  # clear the "deliberately stopped" flag
+  Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden `
+    -RedirectStandardOutput 'bot.log' -RedirectStandardError 'bot.err'
 }
 
 function Stop-Bot {
+  New-Item $StopFlag -ItemType File -Force | Out-Null  # tell the watchdog to leave it stopped
   Get-Bot | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 }
 
@@ -20,16 +24,17 @@ function Get-AutoStart {
   [bool](Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)
 }
 function Enable-AutoStart {
-  # Launch the bot DETACHED so the Task Scheduler host tearing down can't kill it,
-  # with ffmpeg/yt-dlp on PATH and logs captured.
-  $dir = $PSScriptRoot
-  $cmd = "`$env:Path=[Environment]::GetEnvironmentVariable('Path','User')+';'+[Environment]::GetEnvironmentVariable('Path','Machine'); Set-Location '$dir'; Start-Process node -ArgumentList 'bot.js' -WindowStyle Hidden -RedirectStandardOutput '$dir\bot.log' -RedirectStandardError '$dir\bot.err'"
-  $psArgs = '-NoProfile -WindowStyle Hidden -Command "' + $cmd + '"'
-  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
-  $t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName $TaskName -Action $a -Trigger $t -Settings $s -Force | Out-Null
+  # A watchdog task: runs at login AND every 5 minutes, (re)starting the bot if
+  # it isn't running — so it self-heals no matter what killed it — unless it was
+  # deliberately stopped from the dashboard (.stopped flag).
+  $wd = Join-Path $PSScriptRoot 'watchdog.ps1'
+  $a = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wd + '"')
+  $t1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+  $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $TaskName -Action $a -Trigger @($t1, $t2) -Settings $s -Force | Out-Null
 }
 function Disable-AutoStart {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -64,15 +69,15 @@ while ($true) {
   Write-Host "================================`n"
   if (Get-Bot) { Write-Host "  Status: RUNNING" -ForegroundColor Green }
   else         { Write-Host "  Status: stopped" -ForegroundColor DarkGray }
-  if (Get-AutoStart) { Write-Host "  Auto-start at login: [x] ON" -ForegroundColor Green }
-  else               { Write-Host "  Auto-start at login: [ ] off" -ForegroundColor DarkGray }
-  if (Get-KeepAwake) { Write-Host "  Keep PC awake:       [x] ON`n" -ForegroundColor Green }
-  else               { Write-Host "  Keep PC awake:       [ ] off`n" -ForegroundColor DarkGray }
+  if (Get-AutoStart) { Write-Host "  Auto-start & keep-alive: [x] ON" -ForegroundColor Green }
+  else               { Write-Host "  Auto-start & keep-alive: [ ] off" -ForegroundColor DarkGray }
+  if (Get-KeepAwake) { Write-Host "  Keep PC awake:           [x] ON`n" -ForegroundColor Green }
+  else               { Write-Host "  Keep PC awake:           [ ] off`n" -ForegroundColor DarkGray }
   Write-Host "  [1] Start bot"
   Write-Host "  [2] Stop bot"
   Write-Host "  [3] Restart bot"
   Write-Host "  [4] Update yt-dlp now  (use if YouTube songs stop playing)"
-  Write-Host "  [5] Toggle auto-start at login"
+  Write-Host "  [5] Toggle auto-start & keep-alive"
   Write-Host "  [6] Toggle keep-PC-awake"
   Write-Host "  [7] Show invite link"
   Write-Host "  [8] Exit  (bot keeps running)`n"

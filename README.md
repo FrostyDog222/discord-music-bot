@@ -172,7 +172,10 @@ npm start
 ```
 
 ### Scheduled tasks that keep it healthy
-- **Discord Music Bot** — starts the bot at login.
+- **Discord Music Bot** — a **watchdog**: starts the bot at login **and every 5
+  minutes restarts it if it isn't running**, so it self-heals from any crash or
+  unexpected exit. It won't fight you: stopping the bot from the dashboard sets a
+  `.stopped` flag the watchdog respects (Start clears it).
 - **yt-dlp daily update** — updates yt-dlp at 5 AM so songs keep working.
 
 ## Troubleshooting
