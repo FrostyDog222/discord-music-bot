@@ -35,9 +35,8 @@ $ans = Read-Host "`nAuto-start + keep-alive at login, and daily yt-dlp update? (
 if ($ans -eq 'y') {
   # Watchdog: runs at login and every 5 min, (re)starting the bot if it's not
   # running (unless deliberately stopped via the dashboard). Self-heals crashes.
-  $wd = Join-Path $PSScriptRoot 'watchdog.ps1'
-  $a1 = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wd + '"')
+  $vbs = Join-Path $PSScriptRoot 'watchdog-hidden.vbs'  # runs the watchdog with NO window
+  $a1 = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $vbs + '"')
   $t1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $t1b = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
     -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)

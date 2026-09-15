@@ -27,9 +27,8 @@ function Enable-AutoStart {
   # A watchdog task: runs at login AND every 5 minutes, (re)starting the bot if
   # it isn't running — so it self-heals no matter what killed it — unless it was
   # deliberately stopped from the dashboard (.stopped flag).
-  $wd = Join-Path $PSScriptRoot 'watchdog.ps1'
-  $a = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $wd + '"')
+  $vbs = Join-Path $PSScriptRoot 'watchdog-hidden.vbs'  # runs the watchdog with NO window
+  $a = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + $vbs + '"')
   $t1 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
     -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
