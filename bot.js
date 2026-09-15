@@ -53,6 +53,17 @@ function announceNowPlaying(guildId, s, track) {
   announceChannel(guildId, s)?.send({ embeds: [nowPlayingEmbed(track)] }).catch(() => {});
 }
 
+// Presence: show a currently-playing song, else fall back to /help.
+function refreshActivity() {
+  if (!client.user) return;
+  for (const st of guilds.values()) {
+    if (st.queue.length) {
+      return client.user.setActivity(st.queue[0].title.slice(0, 120), { type: ActivityType.Listening });
+    }
+  }
+  client.user.setActivity('/help', { type: ActivityType.Listening });
+}
+
 // Reply to a command with log-aware routing:
 // - If a log channel is set: mirror the message there (the persistent log) and
 //   ack the command privately (ephemeral) so the command channel stays clean.
@@ -60,12 +71,11 @@ function announceNowPlaying(guildId, s, track) {
 // `mirror` = also write it to the log (true for actions; false for info/validation).
 function respond(interaction, s, payload, mirror = true) {
   const body = typeof payload === 'string' ? { content: payload } : payload;
-  const hasLog = Boolean(guildSettings[interaction.guildId]?.channel);
-  if (hasLog) {
-    if (mirror) announceChannel(interaction.guildId, s)?.send(body).catch(() => {});
-    if (interaction.deferred || interaction.replied) return interaction.editReply(body);
-    return interaction.reply({ ...body, flags: MessageFlags.Ephemeral });
+  // Mirror actions to the log channel (the persistent log), if one is set.
+  if (mirror && guildSettings[interaction.guildId]?.channel) {
+    announceChannel(interaction.guildId, s)?.send(body).catch(() => {});
   }
+  // Reply publicly in the command channel; the post-dispatch timer auto-deletes it.
   if (interaction.deferred || interaction.replied) return interaction.editReply(body);
   return interaction.reply(body);
 }
@@ -222,6 +232,7 @@ async function playNext(guildId) {
   s.procs = [yt, ff];
 
   s.player.play(createAudioResource(ff.stdout, { inputType: StreamType.OggOpus }));
+  refreshActivity(); // show the current song as the bot's status
 }
 
 // Leave soon if nothing is playing (queue finished, or a play failed after joining).
@@ -241,6 +252,7 @@ function leaveGuild(guildId, reason) {
   try { s.connection?.destroy(); } catch { /* ignore */ }
   if (reason) announceChannel(guildId, s)?.send(reason).catch(() => {});
   guilds.delete(guildId);
+  refreshActivity(); // back to /help (unless another server is playing)
 }
 
 // Attach resilience handlers to a (re)created voice connection.
@@ -313,6 +325,7 @@ async function ensureConnection(interaction, s) {
       if (!suppress && s.loop === 'queue' && finished) s.queue.push(finished);
       if (!s.queue.length) {
         killProcs(s); // nothing more to play — release the stream processes
+        refreshActivity(); // back to /help (unless another server is playing)
         scheduleIdleLeave(s, interaction.guildId); // leave if nothing new is added soon
         return;
       }
@@ -432,7 +445,7 @@ client.on('interactionCreate', async (interaction) => {
 
   const run = async () => {
   if (cmd === 'play') {
-    await interaction.deferReply(guildSettings[interaction.guildId]?.channel ? { flags: MessageFlags.Ephemeral } : {});
+    await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
     const query = interaction.options.getString('query');
     try {
@@ -461,7 +474,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (cmd === 'load') {
-    await interaction.deferReply(guildSettings[interaction.guildId]?.channel ? { flags: MessageFlags.Ephemeral } : {});
+    await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
     const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
     const saved = name && playlists[interaction.guildId]?.[name];
@@ -748,11 +761,9 @@ client.on('interactionCreate', async (interaction) => {
     } catch { /* nothing more we can do */ }
   }
 
-  // With no log channel, auto-delete the public reply after a delay (if enabled).
-  // With a log channel, replies are ephemeral and clean themselves up.
-  const hasLog = Boolean(guildSettings[interaction.guildId]?.channel);
+  // Auto-delete the reply from the command channel after the delay, if enabled.
   const secs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
-  if (!hasLog && secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
+  if (secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
 });
 
 client.on('error', (e) => console.error('Client error:', e.message));
