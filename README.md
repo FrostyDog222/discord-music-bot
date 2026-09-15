@@ -76,8 +76,9 @@ when it's alone in the channel (5 min) or when the queue finishes (1 min).
 
 > **Keeping chat clean:** commands work in any channel. Set a log channel with
 > `/setchannel` (or `/createchannel`) and the full now-playing/activity log goes
-> there while the main chat only shows brief command replies. Turn on
-> `/autodelete <seconds>` and those replies clear themselves after the delay.
+> there — while the brief command replies in the command channel **auto-clear on
+> their own** (a few seconds by default; set a custom delay with `/autodelete`).
+> With no log channel, replies stay unless you turn on `/autodelete <seconds>`.
 
 > **Volume:** set it per-listener in Discord — right-click the bot in the voice
 > channel and drag the **User Volume** slider. It's local to each person, so

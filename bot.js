@@ -690,7 +690,7 @@ client.on('interactionCreate', async (interaction) => {
     gset(interaction.guildId).channel = target.id;
     saveSettings();
     const canSend = target.permissionsFor(client.user)?.has(PermissionFlagsBits.SendMessages);
-    return interaction.reply(`✅ I'll post now-playing and announcements in <#${target.id}> from now on. (Commands still work in any channel.)${canSend ? '' : '\n⚠️ Heads up: I may not have permission to send messages there — give me access to that channel.'}`);
+    return interaction.reply(`✅ I'll post the log in <#${target.id}> from now on. Commands work in any channel, and my replies there auto-clear (set a custom delay with /autodelete).${canSend ? '' : '\n⚠️ Heads up: I may not have permission to send messages there — give me access to that channel.'}`);
   }
   if (cmd === 'resetchannel') {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
@@ -780,9 +780,14 @@ client.on('interactionCreate', async (interaction) => {
     } catch { /* nothing more we can do */ }
   }
 
-  // Auto-delete the reply from the command channel after the delay, if enabled.
-  const secs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
-  if (secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
+  // Clean up the command-channel reply:
+  // - With a log channel set, the real log lives there, so always remove the
+  //   reply here (after the /autodelete delay if set, else a short default).
+  // - With no log channel, only remove it if /autodelete is on.
+  const hasLog = Boolean(guildSettings[interaction.guildId]?.channel);
+  const autoSecs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
+  const delSecs = hasLog ? (autoSecs > 0 ? autoSecs : 6) : autoSecs;
+  if (delSecs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), delSecs * 1000);
 });
 
 client.on('error', (e) => console.error('Client error:', e.message));
