@@ -53,6 +53,23 @@ function announceNowPlaying(guildId, s, track) {
   announceChannel(guildId, s)?.send({ embeds: [nowPlayingEmbed(track)] }).catch(() => {});
 }
 
+// Reply to a command with log-aware routing:
+// - If a log channel is set: mirror the message there (the persistent log) and
+//   ack the command privately (ephemeral) so the command channel stays clean.
+// - If no log channel: reply in the command channel (auto-deleted later if set).
+// `mirror` = also write it to the log (true for actions; false for info/validation).
+function respond(interaction, s, payload, mirror = true) {
+  const body = typeof payload === 'string' ? { content: payload } : payload;
+  const hasLog = Boolean(guildSettings[interaction.guildId]?.channel);
+  if (hasLog) {
+    if (mirror) announceChannel(interaction.guildId, s)?.send(body).catch(() => {});
+    if (interaction.deferred || interaction.replied) return interaction.editReply(body);
+    return interaction.reply({ ...body, flags: MessageFlags.Ephemeral });
+  }
+  if (interaction.deferred || interaction.replied) return interaction.editReply(body);
+  return interaction.reply(body);
+}
+
 // Parse "1,2 3" into a unique list of positive integers.
 function parseNumberList(input) {
   return [...new Set(String(input).split(/[\s,]+/).filter((x) => /^\d+$/.test(x)).map(Number))];
@@ -415,7 +432,7 @@ client.on('interactionCreate', async (interaction) => {
 
   const run = async () => {
   if (cmd === 'play') {
-    await interaction.deferReply();
+    await interaction.deferReply(guildSettings[interaction.guildId]?.channel ? { flags: MessageFlags.Ephemeral } : {});
     if (!(await ensureConnection(interaction, s))) return;
     const query = interaction.options.getString('query');
     try {
@@ -444,7 +461,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (cmd === 'load') {
-    await interaction.deferReply();
+    await interaction.deferReply(guildSettings[interaction.guildId]?.channel ? { flags: MessageFlags.Ephemeral } : {});
     if (!(await ensureConnection(interaction, s))) return;
     const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
     const saved = name && playlists[interaction.guildId]?.[name];
@@ -459,79 +476,79 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.editReply(`📂 Loaded **${saved.length}** songs from **${name}**.${startNow ? ` Now playing **${saved[0].title}**` : ''}`);
   }
 
-  if (cmd === 'pause') { s.player?.pause(); return interaction.reply('⏸️ Paused.'); }
-  if (cmd === 'resume') { s.player?.unpause(); return interaction.reply('▶️ Resumed.'); }
+  if (cmd === 'pause') { s.player?.pause(); return respond(interaction, s, '⏸️ Paused.'); }
+  if (cmd === 'resume') { s.player?.unpause(); return respond(interaction, s, '▶️ Resumed.'); }
 
   if (cmd === 'skip' || cmd === 'next') {
-    if (!s.queue.length) return interaction.reply('Nothing to skip.');
+    if (!s.queue.length) return respond(interaction, s, 'Nothing to skip.', false);
     const upcoming = s.queue[1];
     s.suppressAnnounce = true;
     s.player?.stop();
-    return interaction.reply(upcoming
+    return respond(interaction, s, upcoming
       ? `⏭️ Skipped — now playing **${upcoming.title}**`
       : '⏭️ Skipped — queue is empty.');
   }
   if (cmd === 'jump') {
     const pos = interaction.options.getInteger('position');
-    if (pos < 1 || pos >= s.queue.length) return interaction.reply('No song at that position — check /queue.');
+    if (pos < 1 || pos >= s.queue.length) return respond(interaction, s, 'No song at that position — check /queue.', false);
     const [track] = s.queue.splice(pos, 1);
     s.queue.splice(1, 0, track);
     s.suppressAnnounce = true;
     s.player?.stop();
-    return interaction.reply(`⏭️ Playing **${track.title}** next — the rest stays queued.`);
+    return respond(interaction, s, `⏭️ Playing **${track.title}** next — the rest stays queued.`);
   }
   if (cmd === 'cut') {
     const pos = interaction.options.getInteger('position');
-    if (pos < 1 || pos >= s.queue.length) return interaction.reply('No song at that position — check /queue.');
+    if (pos < 1 || pos >= s.queue.length) return respond(interaction, s, 'No song at that position — check /queue.', false);
     s.queue.splice(1, pos - 1);
     const target = s.queue[1].title;
     s.suppressAnnounce = true;
     s.player?.stop();
-    return interaction.reply(`✂️ Cut to **${target}** — earlier songs removed.`);
+    return respond(interaction, s, `✂️ Cut to **${target}** — earlier songs removed.`);
   }
   if (cmd === 'remove') {
     const nums = parseNumberList(interaction.options.getString('positions'));
     const idxs = nums.filter((n) => n >= 1 && n < s.queue.length).sort((a, b) => b - a);
-    if (!idxs.length) return interaction.reply('No valid positions — check /queue (can\'t remove the current song).');
+    if (!idxs.length) return respond(interaction, s, 'No valid positions — check /queue (can\'t remove the current song).', false);
     const removed = idxs.map((i) => s.queue.splice(i, 1)[0]).reverse();
-    return interaction.reply(`🗑️ Removed ${removed.length} song(s):\n${removed.map((t) => `• ${t.title}`).join('\n')}`.slice(0, 1900));
+    return respond(interaction, s, `🗑️ Removed ${removed.length} song(s):\n${removed.map((t) => `• ${t.title}`).join('\n')}`.slice(0, 1900));
   }
   if (cmd === 'clear') {
     const n = Math.max(0, s.queue.length - 1);
     s.queue = s.queue.slice(0, 1); // keep the current song
-    return interaction.reply(`🧹 Cleared ${n} song(s). The current song keeps playing.`);
+    return respond(interaction, s, `🧹 Cleared ${n} song(s). The current song keeps playing.`);
   }
   if (cmd === 'shuffle') {
-    if (s.queue.length <= 2) return interaction.reply('Not enough songs to shuffle.');
+    if (s.queue.length <= 2) return respond(interaction, s, 'Not enough songs to shuffle.', false);
     const rest = s.queue.slice(1);
     for (let i = rest.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [rest[i], rest[j]] = [rest[j], rest[i]];
     }
     s.queue = [s.queue[0], ...rest];
-    return interaction.reply(`🔀 Shuffled ${rest.length} upcoming songs.`);
+    return respond(interaction, s, `🔀 Shuffled ${rest.length} upcoming songs.`);
   }
   if (cmd === 'loop') {
     s.loop = interaction.options.getString('mode');
     const label = { off: 'off', song: 'current song 🔂', queue: 'whole queue 🔁' }[s.loop];
-    return interaction.reply(`Loop set to **${label}**.`);
+    return respond(interaction, s, `Loop set to **${label}**.`);
   }
   if (cmd === 'nowplaying') {
     const cur = s.queue[0];
-    if (!cur) return interaction.reply('Nothing is playing.');
-    return interaction.reply({ embeds: [nowPlayingEmbed(cur)] });
+    if (!cur) return respond(interaction, s, 'Nothing is playing.', false);
+    return respond(interaction, s, { embeds: [nowPlayingEmbed(cur)] }, false);
   }
   if (cmd === 'stop') {
     leaveGuild(interaction.guildId);
-    return interaction.reply('⏹️ Stopped and left.');
+    return respond(interaction, s, '⏹️ Stopped and left.');
   }
   if (cmd === 'queue' || cmd === 'list') {
-    if (!s.queue.length) return interaction.reply('Queue is empty.');
+    if (!s.queue.length) return respond(interaction, s, 'Queue is empty.', false);
     const loopNote = s.loop !== 'off' ? `  (loop: ${s.loop})` : '';
     const list = s.queue
       .map((t, i) => `${i === 0 ? '▶️' : `${i}.`} ${t.title} — *${t.requestedBy}*`)
       .join('\n');
-    return interaction.reply((list + loopNote).slice(0, 1900));
+    return respond(interaction, s, (list + loopNote).slice(0, 1900), false);
   }
   if (cmd === 'save') {
     const name = interaction.options.getString('name').toLowerCase().trim();
@@ -553,15 +570,15 @@ client.on('interactionCreate', async (interaction) => {
   if (cmd === 'playlists') {
     const g = playlists[interaction.guildId] || {};
     const names = Object.keys(g);
-    if (!names.length) return interaction.reply('No saved playlists yet. Save one with `/save <name>`.');
-    return interaction.reply('📚 **Saved playlists:**\n' + names.map((n, i) => `${i + 1}. ${n} (${g[n].length} songs)`).join('\n'));
+    if (!names.length) return respond(interaction, s, 'No saved playlists yet. Save one with `/save <name>`.', false);
+    return respond(interaction, s, '📚 **Saved playlists:**\n' + names.map((n, i) => `${i + 1}. ${n} (${g[n].length} songs)`).join('\n'), false);
   }
   if (cmd === 'showplaylist') {
     const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
-    if (!name) return interaction.reply('No such playlist. See /playlists.');
+    if (!name) return respond(interaction, s, 'No such playlist. See /playlists.', false);
     const songs = playlists[interaction.guildId][name];
     const list = songs.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
-    return interaction.reply(`📃 **${name}** (${songs.length} songs)\n${list}`.slice(0, 1900));
+    return respond(interaction, s, `📃 **${name}** (${songs.length} songs)\n${list}`.slice(0, 1900), false);
   }
   if (cmd === 'removefromplaylist') {
     const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('playlist'));
@@ -696,7 +713,7 @@ client.on('interactionCreate', async (interaction) => {
       : '🧹 Auto-delete turned off — my command replies will stay.');
   }
   if (cmd === 'help') {
-    return interaction.reply([
+    return respond(interaction, s, [
       '**🎵 Music bot commands**',
       '`/play <url or search>` — play a song, search, or playlist',
       '`/queue` (`/list`) — show the queue',
@@ -717,7 +734,7 @@ client.on('interactionCreate', async (interaction) => {
       '`/setchannel` · `/resetchannel` · `/createchannel` — where the bot posts announcements',
       '`/autodelete <seconds>` — auto-clear the bot\'s command replies (0 = off)',
       '`/help` — this message',
-    ].join('\n'));
+    ].join('\n'), false);
   }
   };
 
@@ -731,9 +748,11 @@ client.on('interactionCreate', async (interaction) => {
     } catch { /* nothing more we can do */ }
   }
 
-  // Auto-delete this command's reply from the channel after a delay, if enabled.
+  // With no log channel, auto-delete the public reply after a delay (if enabled).
+  // With a log channel, replies are ephemeral and clean themselves up.
+  const hasLog = Boolean(guildSettings[interaction.guildId]?.channel);
   const secs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
-  if (secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
+  if (!hasLog && secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
 });
 
 client.on('error', (e) => console.error('Client error:', e.message));
