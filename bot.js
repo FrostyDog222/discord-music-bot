@@ -408,8 +408,8 @@ const commands = [
   new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)'),
   new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
     .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
-  new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete the bot\'s command replies after N seconds (0 = off)')
-    .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds, e.g. 30 (0 off, max 900)').setRequired(true).setMinValue(0).setMaxValue(900)),
+  new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete the bot\'s command replies after N seconds, or off')
+    .addStringOption((o) => o.setName('value').setDescription('Seconds, e.g. 30 (or "off"; max 900)').setRequired(true)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -732,13 +732,22 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
     }
-    const secs = interaction.options.getInteger('seconds');
+    const raw = interaction.options.getString('value').trim().toLowerCase();
+    let secs;
+    if (['off', 'none', 'no', 'false', '0'].includes(raw)) secs = 0;
+    else {
+      secs = parseInt(raw, 10);
+      if (Number.isNaN(secs) || secs < 0) {
+        return interaction.reply({ content: 'Give a number of seconds (e.g. `30`) or `off`.', flags: MessageFlags.Ephemeral });
+      }
+      secs = Math.min(secs, 900);
+    }
     const g = gset(interaction.guildId);
     if (secs > 0) g.autoDelete = secs; else delete g.autoDelete;
     saveSettings();
     return interaction.reply(secs > 0
       ? `🧹 I'll auto-delete my command replies after **${secs}s**. (Now-playing posts in the set channel stay.)`
-      : '🧹 Auto-delete turned off — my command replies will stay.');
+      : '🧹 Auto-delete turned **off** — my command replies will stay.');
   }
   if (cmd === 'help') {
     return respond(interaction, s, [
@@ -775,7 +784,7 @@ client.on('interactionCreate', async (interaction) => {
       '`/setchannel [channel]` — post now-playing/log to a channel (default: current)',
       '`/resetchannel` — go back to replying where the command is used',
       '`/createchannel [name]` — create a channel and use it for the log',
-      '`/autodelete <seconds>` — auto-delete command replies after N sec (0 = off)',
+      '`/autodelete <seconds|off>` — auto-delete command replies after N sec (or off)',
       '',
       '`/help` — show this message',
     ].join('\n'), false);

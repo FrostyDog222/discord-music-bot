@@ -68,7 +68,7 @@ Setup.bat` installs all three for you; the manual steps are further down.
 | `/setchannel [channel]` | Post now-playing/announcements in the chosen channel (default: current). Needs Manage Channels |
 | `/resetchannel` | Go back to posting wherever the command is used |
 | `/createchannel [name]` | Bot creates a channel and posts there (needs Manage Channels perm on the bot) |
-| `/autodelete <seconds>` | Auto-delete the bot's command replies after N seconds (0 = off). Needs Manage Channels |
+| `/autodelete <seconds\|off>` | Auto-delete the bot's command replies after N seconds, or `off`. Needs Manage Channels |
 | `/help` | Show all commands in Discord |
 
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
@@ -76,10 +76,10 @@ when it's alone in the channel (5 min) or when the queue finishes (1 min).
 
 > **Keeping chat clean:** commands work in any channel. Set a log channel with
 > `/setchannel` (or `/createchannel`) to keep a persistent now-playing/activity
-> log there. Separately, `/autodelete <seconds>` is the on/off switch for the
-> command channel: turn it **on** and the bot's messages there clear after the
-> delay; turn it **off** (`0`) and they stay. The log channel keeps its copy
-> either way.
+> log there. Separately, `/autodelete <seconds|off>` is the on/off switch for
+> the command channel: give it a number of seconds and the bot's messages there
+> clear after the delay; set it to **`off`** and they stay. The log channel
+> keeps its copy either way.
 
 > **Volume:** set it per-listener in Discord — right-click the bot in the voice
 > channel and drag the **User Volume** slider. It's local to each person, so
