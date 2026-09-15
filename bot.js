@@ -30,19 +30,20 @@ function savePlaylists() {
   catch (e) { console.error('playlist save failed:', e.message); }
 }
 
-// Optional dedicated announcement channel per guild ({ guildId: channelId }).
+// Per-guild settings: { guildId: { channel: id, autoDelete: seconds } }.
 // Separate file so the dashboard's config.json writes never clobber it.
-const CHANNELS_FILE = path.join(__dirname, 'channels.json');
-let logChannels = {};
-try { logChannels = JSON.parse(fs.readFileSync(CHANNELS_FILE, 'utf8')); } catch { /* none yet */ }
-function saveLogChannels() {
-  try { fs.writeFileSync(CHANNELS_FILE, JSON.stringify(logChannels)); }
-  catch (e) { console.error('channels save failed:', e.message); }
+const SETTINGS_FILE = path.join(__dirname, 'settings.json');
+let guildSettings = {};
+try { guildSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { /* none yet */ }
+function saveSettings() {
+  try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(guildSettings)); }
+  catch (e) { console.error('settings save failed:', e.message); }
 }
+function gset(guildId) { return (guildSettings[guildId] ??= {}); }
 // Where the bot posts now-playing/leave messages: the set channel, else the
 // channel the last command came from.
 function announceChannel(guildId, s) {
-  const id = logChannels[guildId];
+  const id = guildSettings[guildId]?.channel;
   if (id) { const ch = client.channels.cache.get(id); if (ch) return ch; }
   return s?.textChannel || null;
 }
@@ -360,6 +361,8 @@ const commands = [
   new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)'),
   new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
     .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
+  new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete the bot\'s command replies after N seconds (0 = off)')
+    .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds, e.g. 30 (0 turns it off)').setRequired(true).setMinValue(0).setMaxValue(3600)),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -407,7 +410,7 @@ client.on('interactionCreate', async (interaction) => {
   const cmd = interaction.commandName;
   s.textChannel = interaction.channel; // post auto-advance messages here
 
-  try {
+  const run = async () => {
   if (cmd === 'play') {
     await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
@@ -639,8 +642,8 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to set this.', flags: MessageFlags.Ephemeral });
     }
     const target = interaction.options.getChannel('channel') || interaction.channel;
-    logChannels[interaction.guildId] = target.id;
-    saveLogChannels();
+    gset(interaction.guildId).channel = target.id;
+    saveSettings();
     const canSend = target.permissionsFor(client.user)?.has(PermissionFlagsBits.SendMessages);
     return interaction.reply(`✅ I'll post now-playing and announcements in <#${target.id}> from now on. (Commands still work in any channel.)${canSend ? '' : '\n⚠️ Heads up: I may not have permission to send messages there — give me access to that channel.'}`);
   }
@@ -648,8 +651,8 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
     }
-    delete logChannels[interaction.guildId];
-    saveLogChannels();
+    delete gset(interaction.guildId).channel;
+    saveSettings();
     return interaction.reply('✅ Announcements will now go to wherever the command is used (default).');
   }
   if (cmd === 'createchannel') {
@@ -660,13 +663,25 @@ client.on('interactionCreate', async (interaction) => {
     const name = (interaction.options.getString('name') || 'music-bot').slice(0, 90);
     try {
       const ch = await interaction.guild.channels.create({ name, reason: 'Music bot announcements channel' });
-      logChannels[interaction.guildId] = ch.id;
-      saveLogChannels();
+      gset(interaction.guildId).channel = ch.id;
+      saveSettings();
       return interaction.editReply(`✅ Created <#${ch.id}> — I'll post now-playing and announcements there.`);
     } catch (e) {
       console.error('createchannel failed:', e.message);
       return interaction.editReply('I couldn\'t create a channel — I need the **Manage Channels** permission. Re-invite me with the updated link (dashboard → **Show invite link**) or give my role Manage Channels, then try again. Or make a channel yourself and run **/setchannel** in it.');
     }
+  }
+  if (cmd === 'autodelete') {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
+    }
+    const secs = interaction.options.getInteger('seconds');
+    const g = gset(interaction.guildId);
+    if (secs > 0) g.autoDelete = secs; else delete g.autoDelete;
+    saveSettings();
+    return interaction.reply(secs > 0
+      ? `🧹 I'll auto-delete my command replies after **${secs}s**. (Now-playing posts in the set channel stay.)`
+      : '🧹 Auto-delete turned off — my command replies will stay.');
   }
   if (cmd === 'help') {
     return interaction.reply([
@@ -688,9 +703,14 @@ client.on('interactionCreate', async (interaction) => {
       '`/removefromplaylist <name> <n[,n...] or title>` — remove song(s) from a playlist',
       '`/deleteplaylist <name/# [,...]>` · `/deleteallplaylists` — delete saved playlists',
       '`/setchannel` · `/resetchannel` · `/createchannel` — where the bot posts announcements',
+      '`/autodelete <seconds>` — auto-clear the bot\'s command replies (0 = off)',
       '`/help` — this message',
     ].join('\n'));
   }
+  };
+
+  try {
+    await run();
   } catch (e) {
     console.error(`Command /${cmd} failed:`, e);
     try {
@@ -698,6 +718,10 @@ client.on('interactionCreate', async (interaction) => {
       else if (!interaction.replied) await interaction.reply('⚠️ Something went wrong with that command.');
     } catch { /* nothing more we can do */ }
   }
+
+  // Auto-delete this command's reply from the channel after a delay, if enabled.
+  const secs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
+  if (secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
 });
 
 client.on('error', (e) => console.error('Client error:', e.message));

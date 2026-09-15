@@ -65,6 +65,7 @@ Setup.bat` installs all three for you; the manual steps are further down.
 | `/setchannel [channel]` | Post now-playing/announcements in the chosen channel (default: current). Needs Manage Channels |
 | `/resetchannel` | Go back to posting wherever the command is used |
 | `/createchannel [name]` | Bot creates a channel and posts there (needs Manage Channels perm on the bot) |
+| `/autodelete <seconds>` | Auto-delete the bot's command replies after N seconds (0 = off). Needs Manage Channels |
 | `/help` | Show all commands in Discord |
 
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
