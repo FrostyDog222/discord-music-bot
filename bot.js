@@ -1,96 +1,101 @@
 // Discord YouTube music bot — private, self-hosted.
-require('dotenv').config();
-const fs = require('node:fs');
 const path = require('node:path');
+require('dotenv').config({ path: path.join(__dirname, '.env') }); // not the current directory
+const fs = require('node:fs');
+const net = require('node:net');
 const { spawn } = require('node:child_process');
 const {
-  Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActivityType, EmbedBuilder,
+  Client, Events, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ActivityType, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, MessageFlags, ChannelType,
+  escapeMarkdown,
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource,
   AudioPlayerStatus, VoiceConnectionStatus, entersState, StreamType,
 } = require('@discordjs/voice');
 
-const LEAVE_MS = 5 * 60 * 1000; // auto-leave after 5 min alone in the channel
-const IDLE_MS = 60 * 1000;      // auto-leave after 1 min with nothing playing
-
-// --- saved playlists (persisted per guild) ---
-const PLAYLISTS_FILE = path.join(__dirname, 'playlists.json');
-let playlists = {};
-try { playlists = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf8')); } catch { /* none yet */ }
-
-// Settings (toggled from the dashboard). keepAwake defaults ON so friends can
-// listen while you're away with the PC on.
-const CONFIG_FILE = path.join(__dirname, 'config.json');
-let config = { keepAwake: true };
-try { config = { ...config, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) }; } catch { /* defaults */ }
-function savePlaylists() {
-  try { fs.writeFileSync(PLAYLISTS_FILE, JSON.stringify(playlists)); }
-  catch (e) { console.error('playlist save failed:', e.message); }
+// Timestamp every line: bot.log / bot.err are the only diagnostics.
+for (const k of ['log', 'error']) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => orig(new Date().toISOString(), ...a);
 }
+
+const LEAVE_MS = 5 * 60 * 1000;     // auto-leave after 5 min alone in the channel
+const IDLE_MS = 60 * 1000;          // auto-leave after 1 min with nothing playing
+const START_TIMEOUT_MS = 45_000;    // no audio at all by then -> the track failed
+const RESOLVE_TIMEOUT_MS = 60_000;  // a single yt-dlp lookup may not take longer
+const MAX_ADD = 200;                // most songs one /play or /addtoplaylist can add
+const MAX_QUEUE = 1000;             // most songs a queue or saved playlist can hold
+const MAX_FAILS = 3;                // this many failed tracks in a row -> leave
+const ADMIN = PermissionFlagsBits.ManageChannels;
+// Playback controls must come from the bot's voice channel (admins may always use them).
+const CONTROL = new Set(['pause', 'resume', 'skip', 'next', 'jump', 'cut', 'remove', 'clear', 'shuffle', 'loop', 'stop']);
+
+// Only YouTube links reach yt-dlp: the bot's PC must never fetch arbitrary (e.g. LAN) URLs.
+const YT_HOST = /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i;
+// Every yt-dlp run: ignore stray config files, never use the "any website" extractor, and allow
+// the bot's own Node as a YouTube JS-challenge solver (Deno is still preferred when installed).
+const YTDLP_BASE = [
+  '--ignore-config', '--use-extractors', 'default,-generic',
+  '--js-runtimes', `node:${process.execPath}`,
+];
+
+// --- JSON persistence ---
+// Missing -> fallback. Locked/unreadable -> throw (refuse to start rather than overwrite real data
+// later; the watchdog retries). Corrupt -> set it aside for recovery and start empty.
+function loadJson(file, fallback) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return fallback; throw e; }
+  try {
+    const v = JSON.parse(text.replace(/^﻿/, ''));
+    if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+    throw new Error('not a JSON object');
+  } catch (e) {
+    const bad = `${file}.corrupt-${Date.now()}`;
+    fs.renameSync(file, bad);
+    console.error(`${path.basename(file)} was unreadable (${e.message}); moved it to ${path.basename(bad)} and started empty.`);
+    return fallback;
+  }
+}
+// Flushed temp file + rename: a crash or power cut leaves the old or the new file, never half of one.
+function saveJson(file, data) {
+  const json = JSON.stringify(data, null, 1);
+  const tmp = `${file}.tmp`;
+  try {
+    fs.writeFileSync(tmp, json, { flush: true });
+    // ponytail: Windows refuses the rename while something else holds the file open; then write in place
+    try { fs.renameSync(tmp, file); } catch { fs.writeFileSync(file, json, { flush: true }); fs.rmSync(tmp, { force: true }); }
+    return true;
+  } catch (e) { console.error(`saving ${path.basename(file)} failed:`, e.message); return false; }
+}
+
+const PLAYLISTS_FILE = path.join(__dirname, 'playlists.json');
+const playlists = loadJson(PLAYLISTS_FILE, {}); // { guildId: { name: [track, ...] } }
+const savePlaylists = () => saveJson(PLAYLISTS_FILE, playlists);
+
+// config.json is written by the dashboard. keepAwake defaults ON so friends can listen while
+// you're away with the PC on. Never fatal.
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+const config = { keepAwake: true };
+try { Object.assign(config, JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^﻿/, ''))); }
+catch (e) { if (e.code !== 'ENOENT') console.error('config.json ignored:', e.message); }
 
 // Per-guild settings: { guildId: { channel: id, autoDelete: seconds } }.
-// Separate file so the dashboard's config.json writes never clobber it.
 const SETTINGS_FILE = path.join(__dirname, 'settings.json');
-let guildSettings = {};
-try { guildSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { /* none yet */ }
-function saveSettings() {
-  try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(guildSettings)); }
-  catch (e) { console.error('settings save failed:', e.message); }
-}
+const guildSettings = loadJson(SETTINGS_FILE, {});
+const saveSettings = () => saveJson(SETTINGS_FILE, guildSettings);
 function gset(guildId) { return (guildSettings[guildId] ??= {}); }
-// Where the bot posts now-playing/leave messages: the set channel, else the
-// channel the last command came from.
-function announceChannel(guildId, s) {
-  const id = guildSettings[guildId]?.channel;
-  if (id) { const ch = client.channels.cache.get(id); if (ch) return ch; }
-  return s?.textChannel || null;
-}
-// Send an announcement (now-playing / leave). It persists in a dedicated log
-// channel; if it lands in the command channel (no log channel) and /autodelete
-// is on, it self-deletes after the delay so nothing lingers there.
-function sendAnnounce(guildId, s, payload) {
-  const ch = announceChannel(guildId, s);
-  if (!ch) return;
-  const hasLog = Boolean(guildSettings[guildId]?.channel);
-  ch.send(payload).then((msg) => {
-    if (hasLog) return; // keep it — it's the log
-    const secs = Number(guildSettings[guildId]?.autoDelete) || 0;
-    if (secs > 0) setTimeout(() => msg.delete().catch(() => {}), secs * 1000);
-  }).catch(() => {});
-}
-// Post a "now playing" card (first /play, /load, and auto-advance).
-function announceNowPlaying(guildId, s, track) {
-  sendAnnounce(guildId, s, { embeds: [nowPlayingEmbed(track)] });
-}
 
-// Presence: show a currently-playing song, else fall back to /help.
-function refreshActivity() {
-  if (!client.user) return;
-  for (const st of guilds.values()) {
-    if (st.queue.length) {
-      const title = (st.queue[0].title || 'music').slice(0, 120);
-      return client.user.setActivity(title, { type: ActivityType.Listening });
-    }
-  }
-  client.user.setActivity('/help', { type: ActivityType.Listening });
-}
+// --- small helpers ---
+const md = (t) => escapeMarkdown(String(t ?? ''), { maskedLink: true }); // titles/names in message text
+const normName = (x) => String(x ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+function userError(message) { return Object.assign(new Error(message), { userFacing: true }); }
 
-// Reply to a command with log-aware routing:
-// - If a log channel is set: mirror the message there (the persistent log) and
-//   ack the command privately (ephemeral) so the command channel stays clean.
-// - If no log channel: reply in the command channel (auto-deleted later if set).
-// `mirror` = also write it to the log (true for actions; false for info/validation).
-function respond(interaction, s, payload, mirror = true) {
-  const body = typeof payload === 'string' ? { content: payload } : payload;
-  // Mirror actions to the log channel (the persistent log), if one is set.
-  if (mirror && guildSettings[interaction.guildId]?.channel) {
-    announceChannel(interaction.guildId, s)?.send(body).catch(() => {});
-  }
-  // Reply publicly in the command channel; the post-dispatch timer auto-deletes it.
-  if (interaction.deferred || interaction.replied) return interaction.editReply(body);
-  return interaction.reply(body);
+// yt-dlp's reason from its stderr: the first sentence of the ERROR line, with URLs removed
+// (googlevideo links contain this PC's IP and the text is posted to Discord).
+function ytdlpReason(text) {
+  const m = String(text).match(/ERROR: (?:\[[^\]]+\] [\w-]+: )?([^\r\n]+)/);
+  return m ? m[1].split('. ')[0].replace(/https?:\/\/\S+/g, '').trim().slice(0, 200) : '';
 }
 
 // Parse "1,2 3" into a unique list of positive integers.
@@ -99,18 +104,32 @@ function parseNumberList(input) {
 }
 
 // Resolve a saved playlist by name or 1-based number; returns its key or null.
+// Own-property checks only: names like "constructor" must not match Object built-ins.
 function resolvePlaylistName(guildId, input) {
   const g = playlists[guildId];
   const names = g ? Object.keys(g) : [];
   if (!names.length) return null;
-  const t = String(input).trim();
-  const lower = t.toLowerCase();
-  if (g[lower]) return lower;                                  // exact name wins (e.g. a playlist named "1")
-  if (/^\d+$/.test(t)) return names[parseInt(t, 10) - 1] || null; // otherwise treat as a position
+  const key = normName(input);
+  if (Object.hasOwn(g, key)) return key;                                 // exact name wins
+  const legacy = String(input ?? '').trim().toLowerCase();               // names saved before normalization
+  if (Object.hasOwn(g, legacy)) return legacy;
+  if (/^\d+$/.test(key)) return names[parseInt(key, 10) - 1] ?? null;    // otherwise a position
   return null;
 }
 
-// --- helpers ---
+// Join lines up to Discord's 2000-char limit, noting how many were left out.
+function fitLines(lines, header = '', footer = '') {
+  let out = header;
+  let shown = 0;
+  for (const l of lines) {
+    if (out.length + l.length + footer.length + 40 > 1950) break;
+    out += `${out ? '\n' : ''}${l}`;
+    shown++;
+  }
+  if (shown < lines.length) out += `\n…and ${lines.length - shown} more`;
+  return out + footer;
+}
+
 function fmtDuration(sec) {
   const n = Math.floor(Number(sec));
   if (!n || Number.isNaN(n)) return null;
@@ -123,63 +142,101 @@ function fmtDuration(sec) {
 
 function nowPlayingEmbed(track, heading = 'Now playing') {
   const e = new EmbedBuilder().setColor(0x1db954).setAuthor({ name: heading })
-    .setTitle(track.title || 'Unknown');
+    .setTitle(String(track.title || 'Unknown').slice(0, 256));
   if (/^https?:\/\//.test(track.url || '')) e.setURL(track.url);
   const dur = fmtDuration(track.duration);
   if (dur) e.addFields({ name: 'Duration', value: dur, inline: true });
-  if (track.requestedBy) e.addFields({ name: 'Requested by', value: track.requestedBy, inline: true });
-  if (track.thumbnail) e.setThumbnail(track.thumbnail);
+  if (track.requestedBy) e.addFields({ name: 'Requested by', value: md(track.requestedBy).slice(0, 1024), inline: true });
+  if (/^https?:\/\//.test(track.thumbnail || '')) e.setThumbnail(track.thumbnail);
   return e;
 }
 
-// Show a Yes/No prompt on the interaction; resolve to the clicked button (or null on timeout).
+// Show a Yes/No prompt; resolve to the clicked button (or null on timeout).
 async function askYesNo(interaction, content, danger = false) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('yes').setLabel('Yes')
       .setStyle(danger ? ButtonStyle.Danger : ButtonStyle.Success),
     new ButtonBuilder().setCustomId('no').setLabel('No').setStyle(ButtonStyle.Secondary),
   );
-  const msg = await interaction.reply({ content, components: [row], fetchReply: true });
+  const res = await interaction.reply({ content, components: [row] });
   try {
-    const btn = await msg.awaitMessageComponent({
-      filter: (i) => i.user.id === interaction.user.id, time: 30000,
-    });
-    return btn; // btn.customId is 'yes' or 'no'; caller must btn.update(...)
+    return await res.awaitMessageComponent({
+      time: 30_000,
+      filter: (i) => {
+        if (i.user.id === interaction.user.id) return true;
+        i.reply({ content: 'Only the person who ran the command can answer.', flags: MessageFlags.Ephemeral }).catch(() => {});
+        return false;
+      },
+    }); // btn.customId is 'yes' or 'no'; the caller must btn.update(...)
   } catch {
-    await interaction.editReply({ content: '⏱️ Timed out — nothing changed.', components: [] });
+    await interaction.editReply({ content: '⏱️ Timed out — nothing changed.', components: [] }).catch(() => {});
     return null;
   }
 }
 
-// Resolve a URL/search/playlist to an array of { title, url, duration, thumbnail }.
-// A URL with a list= param returns the whole playlist; anything else, one track.
+// yt-dlp.exe (winget) is a PyInstaller one-file build: the PID we spawn is a launcher and the
+// real worker is its child, so a plain kill() orphans the worker. taskkill /T ends the whole tree.
+function killTree(p) {
+  if (!p || p.exitCode !== null || p.signalCode !== null) return;
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/PID', String(p.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+  } else {
+    try { p.kill('SIGKILL'); } catch { /* already gone */ }
+  }
+}
+
+// Resolve a YouTube link, playlist, or search term to [{ title, url, duration, thumbnail }].
 function resolveTracks(query) {
-  const isUrl = /^https?:\/\//.test(query);
-  const isPlaylist = isUrl && /[?&]list=/.test(query);
-  const target = isUrl ? query : `ytsearch1:${query}`;
-  const fmt = isPlaylist
-    ? '%(title)s\t%(url)s\t%(duration)s\t%(thumbnail)s'
-    : '%(title)s\t%(webpage_url)s\t%(duration)s\t%(thumbnail)s';
-  const args = [isPlaylist ? '--flat-playlist' : '--no-playlist', '--print', fmt, target];
+  const q = String(query).trim();
+  let target = `ytsearch1:${q}`;
+  let isPlaylist = false;
+  if (/^https?:\/\//i.test(q)) {
+    let u = null;
+    try { u = new URL(q); } catch { /* not a valid URL */ }
+    if (!u || !YT_HOST.test(u.hostname)) return Promise.reject(userError('Only YouTube links are supported.'));
+    target = u.href; // pass the normalized URL we checked, never the raw string
+    // Only a real playlist page is a playlist. watch?v=X&list=... (a Mix/radio link, or a song
+    // opened inside a playlist) plays just that song instead of queueing hundreds.
+    isPlaylist = u.searchParams.has('list') && !u.searchParams.has('v') && !/youtu\.be$/i.test(u.hostname);
+  }
+  const args = [
+    ...YTDLP_BASE, '--encoding', 'utf-8', // Windows pipes default to cp1252 and mangle non-Latin titles
+    isPlaylist ? '--yes-playlist' : '--no-playlist', '--flat-playlist', '--playlist-items', `1:${MAX_ADD}`,
+    '--print', '%(title)s\t%(webpage_url,url)s\t%(duration)s\t%(thumbnail,thumbnails.-1.url)s\t%(extractor_key)s',
+    target,
+  ];
   return new Promise((resolve, reject) => {
-    const p = spawn('yt-dlp', args);
+    const p = spawn('yt-dlp', args, { windowsHide: true });
+    p.stdout.setEncoding('utf8'); // keeps multi-byte characters split across chunks intact
+    p.stderr.setEncoding('utf8');
     let out = '';
     let err = '';
+    const timer = setTimeout(() => {
+      killTree(p);
+      reject(userError('YouTube took too long to answer — try again.'));
+    }, RESOLVE_TIMEOUT_MS);
     p.stdout.on('data', (d) => { out += d; });
-    p.stderr.on('data', (d) => { err += d; });
-    p.on('error', reject);
+    p.stderr.on('data', (d) => { err += d; }); // must be drained or yt-dlp can block
+    p.on('error', (e) => { clearTimeout(timer); reject(e); });
     p.on('close', (code) => {
-      if (code !== 0) return reject(new Error(err.trim() || `yt-dlp exited ${code}`));
-      const tracks = out.trim().split('\n').filter(Boolean).map((line) => {
-        const [title, url, duration, thumbnail] = line.split('\t');
+      clearTimeout(timer);
+      if (code !== 0) {
+        const why = ytdlpReason(err);
+        return reject(why ? userError(why) : new Error(err.trim() || `yt-dlp exited ${code}`));
+      }
+      const tracks = out.split('\n').map((l) => l.replace(/\r$/, '')).filter(Boolean).map((line) => {
+        const [title, url, duration, thumbnail, ie] = line.split('\t');
         return {
-          title,
-          url,
+          title, url, ie,
           duration: duration && duration !== 'NA' ? Number(duration) : null,
           thumbnail: thumbnail && thumbnail !== 'NA' ? thumbnail : null,
         };
-      }).filter((t) => t.url);
-      if (!tracks.length) return reject(new Error('No result'));
+      })
+        // channel tabs are playlists, not songs; unavailable playlist entries would only fail later
+        .filter((t) => /^https?:\/\//.test(t.url || '') && t.ie !== 'YoutubeTab' && !/^\[(Private|Deleted) video\]$/.test(t.title))
+        .slice(0, MAX_ADD)
+        .map(({ ie, ...t }) => t);
+      if (!tracks.length) return reject(userError('No results found.'));
       resolve(tracks);
     });
   });
@@ -187,7 +244,42 @@ function resolveTracks(query) {
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  allowedMentions: { parse: [] }, // echoed titles/playlist names must never ping anyone
 });
+
+// Where the bot keeps its log: the configured channel, only if it still exists.
+function logChannel(guildId) {
+  const id = guildSettings[guildId]?.channel;
+  return (id && client.channels.cache.get(id)) || null;
+}
+// Where announcements go: the log channel, else the channel the last command came from.
+function announceChannel(guildId, s) { return logChannel(guildId) || s?.textChannel || null; }
+
+// Send an announcement (now-playing / leave / failures). It persists in the log channel; if it
+// lands in the command channel instead and /autodelete is on, it self-deletes after the delay.
+function sendAnnounce(guildId, s, payload) {
+  const log = logChannel(guildId);
+  const ch = log || s?.textChannel;
+  if (!ch) return;
+  ch.send(payload).then((msg) => {
+    if (log) return; // keep it — it's the log
+    const secs = Number(guildSettings[guildId]?.autoDelete) || 0;
+    if (secs > 0) setTimeout(() => msg.delete().catch(() => {}), secs * 1000);
+  }).catch(() => {});
+}
+function announceNowPlaying(guildId, s, track) {
+  sendAnnounce(guildId, s, { embeds: [nowPlayingEmbed(track)] });
+}
+
+// Reply to a command; with `mirror`, also write it to the log channel (actions yes, info no).
+function respond(interaction, s, payload, mirror = true) {
+  const body = typeof payload === 'string' ? { content: payload } : payload;
+  const log = mirror ? logChannel(interaction.guildId) : null;
+  if (log && log.id !== interaction.channelId) log.send(body).catch(() => {});
+  else if (log) interaction.keepReply = true; // run inside the log channel: this reply IS the log entry
+  if (interaction.deferred || interaction.replied) return interaction.editReply(body);
+  return interaction.reply(body);
+}
 
 // Per-guild state.
 const guilds = new Map();
@@ -196,57 +288,119 @@ function getState(guildId) {
   if (!s) {
     s = {
       connection: null, player: null, queue: [], textChannel: null,
-      suppressAnnounce: false, loop: 'off',
+      suppressAnnounce: false, loop: 'off', fails: 0, resolving: 0,
       leaveTimer: null, idleTimer: null, procs: null,
-      voiceChannel: null, leaving: false, reconnecting: false,
+      leaving: false, reconnecting: false, kicked: false,
     };
     guilds.set(guildId, s);
   }
   return s;
 }
 
-// Kill the yt-dlp/ffmpeg processes feeding the current track (avoids orphans,
-// important for long podcasts and skips).
-function killProcs(s) {
-  if (!s.procs) return;
-  for (const p of s.procs) { try { p.kill('SIGKILL'); } catch { /* already gone */ } }
-  s.procs = null;
+// Presence: show a currently playing song, else fall back to /help.
+function refreshActivity() {
+  if (!client.user) return;
+  for (const st of guilds.values()) {
+    if (st.queue.length) {
+      return client.user.setActivity(String(st.queue[0].title || 'music').slice(0, 120), { type: ActivityType.Listening });
+    }
+  }
+  client.user.setActivity('/help', { type: ActivityType.Listening });
 }
 
-async function playNext(guildId) {
-  const s = getState(guildId);
+// Stop the yt-dlp/ffmpeg processes feeding the current track.
+function killProcs(s) {
+  if (!s.procs) return;
+  const [yt, ff] = s.procs;
+  s.procs = null;
+  yt.stdout?.destroy(); // the worker hits a broken pipe on its next write
+  killTree(yt);
+  try { ff.kill('SIGKILL'); } catch { /* already gone */ }
+}
+
+function playNext(guildId) {
+  const s = guilds.get(guildId);
+  if (!s || s.leaving || !s.player) return;
   const next = s.queue[0];
   if (!next) return; // nothing queued; stay connected, idle
   if (s.idleTimer) { clearTimeout(s.idleTimer); s.idleTimer = null; } // a song is starting
   killProcs(s); // stop whatever was playing before
 
-  // yt-dlp streams the audio; ffmpeg decodes ANY container/length and outputs
-  // Ogg Opus at Discord's exact format (48 kHz stereo). We pass Opus straight
-  // through (StreamType.OggOpus) — NO JavaScript re-encoding — so playback stays
-  // correct-speed and cheap even under heavy CPU load, and streams hours-long
-  // podcasts without pre-downloading.
-  // --http-chunk-size uses short ranged requests instead of one long-lived
-  // connection, which YouTube invalidates mid-stream on long tracks (the classic
-  // "audio stops after ~4 min" bug). Retries recover transient fragment drops.
+  // yt-dlp streams the audio; ffmpeg decodes ANY container/length and outputs Ogg Opus at
+  // Discord's exact format (48 kHz stereo), passed straight through (StreamType.OggOpus): no
+  // JavaScript re-encoding, so playback stays correct-speed and cheap under heavy CPU load.
+  // --http-chunk-size uses short ranged requests instead of one long-lived connection, which
+  // YouTube invalidates mid-stream on long tracks. Retries recover transient fragment drops.
   const yt = spawn('yt-dlp', [
-    '-f', 'bestaudio/best', '--no-playlist',
+    ...YTDLP_BASE, '-f', 'bestaudio/best', '--no-playlist', '--no-progress',
     '--retries', '10', '--fragment-retries', '10', '--http-chunk-size', '10M',
     '-o', '-', next.url,
-  ], { stdio: ['ignore', 'pipe', 'ignore'] });
+  ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const ff = spawn('ffmpeg', [
     '-i', 'pipe:0', '-loglevel', 'error', '-vn',
     '-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-ac', '2',
     '-f', 'opus', 'pipe:1',
-  ], { stdio: ['pipe', 'pipe', 'ignore'] });
-  yt.on('error', (e) => console.error('yt-dlp spawn error:', e.message));
-  ff.on('error', (e) => console.error('ffmpeg spawn error:', e.message));
-  yt.stdout.on('error', () => {});   // ignore EPIPE when a track is skipped
+  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+  // Why THIS track failed; lives on the resource so a later track can't overwrite it.
+  const meta = { track: next, err: '', ffErr: '' };
+  let tail = '';
+  yt.stderr.setEncoding('utf8');
+  yt.stderr.on('data', (d) => { tail = (tail + d).slice(-4000); meta.err = ytdlpReason(tail) || meta.err; });
+  ff.stderr.setEncoding('utf8');
+  ff.stderr.on('data', (d) => { meta.ffErr = (meta.ffErr + d).slice(-500); });
+  yt.on('error', (e) => { meta.err ||= `yt-dlp could not start (${e.code})`; console.error('yt-dlp spawn error:', e.message); });
+  ff.on('error', (e) => { meta.err ||= `ffmpeg could not start (${e.code})`; console.error('ffmpeg spawn error:', e.message); });
+  yt.stdout.on('error', () => {}); // ignore EPIPE when a track is skipped
   ff.stdin.on('error', () => {});
   yt.stdout.pipe(ff.stdin);
-  s.procs = [yt, ff];
+  const procs = [yt, ff];
+  s.procs = procs;
 
-  s.player.play(createAudioResource(ff.stdout, { inputType: StreamType.OggOpus }));
+  const res = createAudioResource(ff.stdout, { inputType: StreamType.OggOpus, metadata: meta });
+  s.player.play(res);
+  // No audio at all within START_TIMEOUT_MS (e.g. yt-dlp stuck retrying): end it; onIdle reports it.
+  setTimeout(() => {
+    if (!res.started && s.procs === procs) { meta.err ||= 'timed out waiting for audio'; killProcs(s); }
+  }, START_TIMEOUT_MS).unref();
   refreshActivity(); // show the current song as the bot's status
+}
+
+// The player went Idle: a song ended, failed, or a command stopped it.
+function onIdle(s, guildId, oldState) {
+  if (s.leaving || guilds.get(guildId) !== s) return; // torn down or replaced session
+  const suppress = s.suppressAnnounce; // set only by skip/jump/cut
+  s.suppressAnnounce = false;
+  // Ended with ~no audio and no command stopped it = the stream failed (removed/private/age-locked
+  // video, YouTube bot-check, outdated yt-dlp, no network). Never loop a failed track.
+  const res = oldState?.resource;
+  const failed = !suppress && (res?.playbackDuration ?? 0) < 2000;
+  s.fails = failed ? s.fails + 1 : 0;
+  if (failed) {
+    const { track = s.queue[0] || {}, err = '', ffErr = '' } = res?.metadata || {};
+    console.error('Could not play', track.url, '-', err || 'no audio', ffErr ? `| ffmpeg: ${ffErr.trim().split('\n').pop()}` : '');
+    sendAnnounce(guildId, s, `⚠️ Couldn't play **${md(track.title)}**${err ? ` — ${md(err)}` : ''}. Skipping.`);
+    if (s.fails >= MAX_FAILS) {
+      return leaveGuild(guildId, `⚠️ ${MAX_FAILS} songs in a row failed to load — YouTube may be blocking downloads right now. Try again later, or use "Update yt-dlp now" in the dashboard.`);
+    }
+  }
+  if (!suppress && !failed && s.loop === 'song' && s.queue.length) return playNext(guildId);
+  const finished = s.queue.shift();
+  if (!suppress && !failed && s.loop === 'queue' && finished) s.queue.push(finished);
+  if (!s.queue.length) {
+    killProcs(s); // nothing more to play — release the stream processes
+    refreshActivity(); // back to /help (unless another server is playing)
+    scheduleIdleLeave(s, guildId); // leave if nothing new is added soon
+    return;
+  }
+  playNext(guildId);
+  if (!suppress) announceNowPlaying(guildId, s, s.queue[0]);
+}
+
+// Move past the current song right away, even while it is paused or still loading.
+function skipCurrent(s, guildId) {
+  s.suppressAnnounce = true;
+  if (!s.player || !s.player.stop(true)) onIdle(s, guildId, null); // player was already idle
 }
 
 // Leave soon if nothing is playing (queue finished, or a play failed after joining).
@@ -258,115 +412,123 @@ function scheduleIdleLeave(s, guildId, reason = '👋 Left — the queue finishe
 function leaveGuild(guildId, reason) {
   const s = guilds.get(guildId);
   if (!s) return;
-  s.leaving = true; // stop the reconnect logic from fighting the teardown
-  if (s.leaveTimer) clearTimeout(s.leaveTimer);
-  if (s.idleTimer) clearTimeout(s.idleTimer);
-  killProcs(s);
-  try { s.player?.stop(); } catch { /* ignore */ }
-  try { s.connection?.destroy(); } catch { /* ignore */ }
-  if (reason) sendAnnounce(guildId, s, reason);
+  s.leaving = true; // stale handlers and the reconnect logic must not touch this session again
   guilds.delete(guildId);
+  clearTimeout(s.leaveTimer);
+  clearTimeout(s.idleTimer);
+  s.queue = [];
+  killProcs(s);
+  try { s.player?.stop(true); } catch { /* ignore */ }
+  try { if (s.connection && s.connection.state.status !== VoiceConnectionStatus.Destroyed) s.connection.destroy(); } catch { /* ignore */ }
+  if (reason) sendAnnounce(guildId, s, reason);
   refreshActivity(); // back to /help (unless another server is playing)
 }
 
-// Attach resilience handlers to a (re)created voice connection.
+// Resilience for the voice connection: a network blip is retried on the same connection (the song
+// resumes where it stopped); a moderator's Disconnect is respected.
 function attachConnectionHandlers(s, guildId) {
-  s.connection.on('error', (e) => console.error('[voice error]', e.message));
-  s.connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    if (s.leaving) return;
+  const conn = s.connection;
+  conn.on('error', (e) => console.error('[voice error]', e.message));
+  conn.on(VoiceConnectionStatus.Disconnected, async () => {
+    if (s.leaving || s.reconnecting) return;
+    s.reconnecting = true;
     try {
-      // Transient blip (e.g. CPU/network stall) — let discord.js auto-reconnect.
-      await Promise.race([
-        entersState(s.connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(s.connection, VoiceConnectionStatus.Connecting, 5_000),
-      ]);
-    } catch {
-      // Hard drop — rebuild the connection and resume.
-      await rejoin(s, guildId);
-    }
+      try { // moved to another channel, or the library is already reconnecting by itself
+        await Promise.race([
+          entersState(conn, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
+        ]);
+        return;
+      } catch { /* a real drop */ }
+      for (let i = 0; i < 6 && !s.leaving; i++) {
+        // Not the member cache: a gateway re-identify clears it, and that drop should be rejoined.
+        if (s.kicked) return leaveGuild(guildId, '👋 Left — I was disconnected from the voice channel.');
+        conn.rejoin(); // re-sends the join for joinConfig.channelId; the player stays subscribed
+        try { await entersState(conn, VoiceConnectionStatus.Ready, 10_000); return; } catch { /* gateway still down; retry */ }
+      }
+      if (!s.leaving) leaveGuild(guildId, '⚠️ Lost the voice connection and couldn\'t reconnect. Run /play to start again.');
+    } finally { s.reconnecting = false; }
   });
 }
 
-// Rebuild a dead connection to the same channel and restart the current track.
-async function rejoin(s, guildId) {
-  if (s.leaving || s.reconnecting || !s.voiceChannel) return;
-  s.reconnecting = true;
-  try { s.connection?.destroy(); } catch { /* ignore */ }
-  try {
-    const ch = s.voiceChannel;
-    s.connection = joinVoiceChannel({
-      channelId: ch.id, guildId: ch.guild.id, adapterCreator: ch.guild.voiceAdapterCreator,
-    });
-    attachConnectionHandlers(s, guildId);
-    s.connection.subscribe(s.player);
-    await entersState(s.connection, VoiceConnectionStatus.Ready, 20_000);
-    if (s.queue.length) { s.suppressAnnounce = true; await playNext(guildId); } // resume
-    s.reconnecting = false;
-  } catch {
-    s.reconnecting = false;
-    leaveGuild(guildId, '⚠️ Lost the voice connection and couldn\'t reconnect. Run /play to start again.');
-  }
-}
-
-// Assumes interaction is already deferred; replies via editReply.
+// Make sure the bot is in the caller's voice channel. Assumes the interaction is deferred.
 async function ensureConnection(interaction, s) {
   const channel = interaction.member?.voice?.channel;
   if (!channel) {
     await interaction.editReply('Join a voice channel first.');
     return false;
   }
-  if (!s.connection) {
-    s.voiceChannel = channel; // remembered so we can rejoin after a drop
-    s.leaving = false;
-    s.connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: channel.guild.id,
-      adapterCreator: channel.guild.voiceAdapterCreator,
-    });
-    s.player = createAudioPlayer();
-    s.connection.subscribe(s.player);
-    attachConnectionHandlers(s, interaction.guildId);
-
-    s.player.on(AudioPlayerStatus.Idle, async () => {
-      const suppress = s.suppressAnnounce; // consume: only commands set this
-      s.suppressAnnounce = false;
-      // Natural end with song-loop: replay the same song.
-      if (!suppress && s.loop === 'song' && s.queue.length) {
-        await playNext(interaction.guildId);
-        return;
+  const guildId = interaction.guildId;
+  const stale = () => guilds.get(guildId) !== s; // /stop (or an auto-leave) ended this session meanwhile
+  if (stale()) {
+    await interaction.editReply('Playback was just stopped — run the command again.');
+    return false;
+  }
+  const canUse = (ch) => ch.joinable && ch.permissionsFor(client.user)?.has(PermissionFlagsBits.Speak);
+  if (s.connection) {
+    const botCh = s.connection.joinConfig.channelId;
+    if (botCh !== channel.id) {
+      const cur = interaction.guild.channels.cache.get(botCh);
+      if (cur?.members.some((m) => !m.user.bot)) {
+        await interaction.editReply(`I'm already playing in <#${botCh}> — join that channel.`);
+        return false;
       }
-      const finished = s.queue.shift();
-      if (!suppress && s.loop === 'queue' && finished) s.queue.push(finished);
-      if (!s.queue.length) {
-        killProcs(s); // nothing more to play — release the stream processes
-        refreshActivity(); // back to /help (unless another server is playing)
-        scheduleIdleLeave(s, interaction.guildId); // leave if nothing new is added soon
-        return;
+      if (!canUse(channel)) {
+        await interaction.editReply(`I can't join or speak in <#${channel.id}> — check my Connect/Speak permissions there (or it's full).`);
+        return false;
       }
-      await playNext(interaction.guildId);
-      if (!suppress) announceNowPlaying(interaction.guildId, s, s.queue[0]);
-    });
-    s.player.on('error', (e) => {
-      console.error('Player error:', e.message);
-      s.queue.shift();
-      if (s.queue.length) playNext(interaction.guildId);
-    });
-
-    try {
-      await entersState(s.connection, VoiceConnectionStatus.Ready, 20_000);
-    } catch {
-      s.connection.destroy();
-      s.connection = null;
-      await interaction.editReply('Could not connect to voice.');
-      return false;
+      // Nobody is listening where I am: move the existing connection to the caller's channel.
+      joinVoiceChannel({ channelId: channel.id, guildId, adapterCreator: channel.guild.voiceAdapterCreator });
     }
+    if (s.idleTimer) { clearTimeout(s.idleTimer); s.idleTimer = null; } // someone wants music again
+    return true;
+  }
+  if (!canUse(channel)) {
+    await interaction.editReply(`I can't join or speak in <#${channel.id}> — check my Connect/Speak permissions there (or it's full).`);
+    return false;
+  }
+  s.connection = joinVoiceChannel({
+    channelId: channel.id,
+    guildId,
+    adapterCreator: channel.guild.voiceAdapterCreator,
+  });
+  // Tolerate up to 15 s of stalled audio (slow download) instead of ending the song after 100 ms.
+  s.player = createAudioPlayer({ behaviors: { maxMissedFrames: 750 } });
+  s.connection.subscribe(s.player);
+  attachConnectionHandlers(s, guildId);
+  s.player.on(AudioPlayerStatus.Idle, (oldState) => onIdle(s, guildId, oldState));
+  // An 'error' is always followed by Idle, which advances the queue; don't advance twice here.
+  s.player.on('error', (e) => { if (!s.leaving) console.error('Player error:', e.message); });
+
+  try {
+    await entersState(s.connection, VoiceConnectionStatus.Ready, 20_000);
+  } catch {
+    if (!stale()) leaveGuild(guildId); // never tear down a newer session
+    await interaction.editReply(stale() ? 'Playback was just stopped — run the command again.' : 'Could not connect to voice.');
+    return false;
+  }
+  if (stale()) {
+    await interaction.editReply('Playback was just stopped — run the command again.');
+    return false;
   }
   return true;
 }
 
+// Add songs to a guild's queue (capped); start playing if it was empty. Returns what was added.
+function enqueue(s, guildId, tracks, requestedBy) {
+  const add = tracks.slice(0, Math.max(0, MAX_QUEUE - s.queue.length));
+  const startNow = s.queue.length === 0 && add.length > 0;
+  s.queue.push(...add.map((t) => ({
+    title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null, requestedBy,
+  })));
+  if (startNow) { s.fails = 0; playNext(guildId); }
+  return { add, startNow };
+}
+
+const nameOpt = (o, desc) => o.setName('name').setDescription(desc).setRequired(true).setMaxLength(50);
 const commands = [
-  new SlashCommandBuilder().setName('play').setDescription('Play a song, search term, or playlist')
-    .addStringOption((o) => o.setName('query').setDescription('URL or search').setRequired(true)),
+  new SlashCommandBuilder().setName('play').setDescription('Play a YouTube link or playlist, or search by name')
+    .addStringOption((o) => o.setName('query').setDescription('YouTube link or search').setRequired(true).setMaxLength(500)),
   new SlashCommandBuilder().setName('pause').setDescription('Pause playback'),
   new SlashCommandBuilder().setName('resume').setDescription('Resume playback'),
   new SlashCommandBuilder().setName('skip').setDescription('Skip current song'),
@@ -376,7 +538,7 @@ const commands = [
   new SlashCommandBuilder().setName('cut').setDescription('Jump to a position and delete everything before it')
     .addIntegerOption((o) => o.setName('position').setDescription('Position number, e.g. 3').setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName('remove').setDescription('Remove song(s) from the queue')
-    .addStringOption((o) => o.setName('positions').setDescription('Position(s) from /queue, e.g. 2 or 2,3,5').setRequired(true)),
+    .addStringOption((o) => o.setName('positions').setDescription('Position(s) from /queue, e.g. 2 or 2,3,5').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder().setName('clear').setDescription('Clear the queue (keeps the current song)'),
   new SlashCommandBuilder().setName('shuffle').setDescription('Shuffle the upcoming songs'),
   new SlashCommandBuilder().setName('loop').setDescription('Set loop mode')
@@ -387,29 +549,35 @@ const commands = [
   new SlashCommandBuilder().setName('queue').setDescription('Show the queue'),
   new SlashCommandBuilder().setName('list').setDescription('Show the queue'),
   new SlashCommandBuilder().setName('save').setDescription('Save the current queue as a playlist')
-    .addStringOption((o) => o.setName('name').setDescription('Playlist name').setRequired(true)),
+    .addStringOption((o) => nameOpt(o, 'Playlist name')),
   new SlashCommandBuilder().setName('load').setDescription('Load a saved playlist into the queue')
-    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true)),
+    .addStringOption((o) => nameOpt(o, 'Playlist name or number')),
   new SlashCommandBuilder().setName('playlists').setDescription('List your saved playlists'),
   new SlashCommandBuilder().setName('showplaylist').setDescription('Show the songs in a saved playlist')
-    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true)),
+    .addStringOption((o) => nameOpt(o, 'Playlist name or number')),
   new SlashCommandBuilder().setName('removefromplaylist').setDescription('Remove song(s) from a saved playlist')
-    .addStringOption((o) => o.setName('playlist').setDescription('Playlist name or number').setRequired(true))
-    .addStringOption((o) => o.setName('song').setDescription('Song number(s) e.g. 1,3 (from /showplaylist) or a name').setRequired(true)),
-  new SlashCommandBuilder().setName('deleteplaylist').setDescription('Delete saved playlist(s)')
-    .addStringOption((o) => o.setName('name').setDescription('Name(s) or number(s), e.g. rock or 1,3').setRequired(true)),
-  new SlashCommandBuilder().setName('deleteallplaylists').setDescription('Delete ALL saved playlists on this server'),
+    .addStringOption((o) => o.setName('playlist').setDescription('Playlist name or number').setRequired(true).setMaxLength(50))
+    .addStringOption((o) => o.setName('song').setDescription('Song number(s) e.g. 1,3 (from /showplaylist) or part of a title').setRequired(true).setMaxLength(200)),
   new SlashCommandBuilder().setName('addtoplaylist').setDescription('Add a song to a saved playlist')
-    .addStringOption((o) => o.setName('name').setDescription('Playlist name or number').setRequired(true))
-    .addStringOption((o) => o.setName('song').setDescription('URL or search (defaults to the current song)').setRequired(false)),
+    .addStringOption((o) => nameOpt(o, 'Playlist name or number'))
+    .addStringOption((o) => o.setName('song').setDescription('YouTube link or search (defaults to the current song)').setRequired(false).setMaxLength(500)),
+  new SlashCommandBuilder().setName('deleteplaylist').setDescription('Delete saved playlist(s)')
+    .addStringOption((o) => o.setName('name').setDescription('Name(s) or number(s), e.g. rock or 1,3').setRequired(true).setMaxLength(200))
+    .setDefaultMemberPermissions(ADMIN),
+  new SlashCommandBuilder().setName('deleteallplaylists').setDescription('Delete ALL saved playlists on this server')
+    .setDefaultMemberPermissions(ADMIN),
   new SlashCommandBuilder().setName('setchannel').setDescription('Choose the channel for now-playing/announcements')
     .addChannelOption((o) => o.setName('channel').setDescription('Channel (default: the current one)')
-      .addChannelTypes(ChannelType.GuildText).setRequired(false)),
-  new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)'),
+      .addChannelTypes(ChannelType.GuildText).setRequired(false))
+    .setDefaultMemberPermissions(ADMIN),
+  new SlashCommandBuilder().setName('resetchannel').setDescription('Post announcements wherever commands are used (default)')
+    .setDefaultMemberPermissions(ADMIN),
   new SlashCommandBuilder().setName('createchannel').setDescription('Create a channel for the bot and post announcements there')
-    .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false)),
+    .addStringOption((o) => o.setName('name').setDescription('Channel name (default: music-bot)').setRequired(false).setMaxLength(90))
+    .setDefaultMemberPermissions(ADMIN),
   new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete the bot\'s command replies after N seconds, or off')
-    .addStringOption((o) => o.setName('value').setDescription('Seconds, e.g. 30 (or "off"; max 900)').setRequired(true)),
+    .addStringOption((o) => o.setName('value').setDescription('Seconds, e.g. 30 (or "off"; max 840)').setRequired(true).setMaxLength(10))
+    .setDefaultMemberPermissions(ADMIN),
   new SlashCommandBuilder().setName('help').setDescription('Show all commands'),
 ].map((c) => c.toJSON());
 
@@ -423,23 +591,42 @@ async function registerCommands(guildId) {
   }
 }
 
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
   for (const [id] of client.guilds.cache) await registerCommands(id);
-  client.user.setActivity('/help', { type: ActivityType.Listening });
+  refreshActivity();
   console.log(`Logged in as ${client.user.tag} (${client.guilds.cache.size} server(s))`);
   const invite = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=3148816&scope=bot+applications.commands`;
   console.log(`Invite link: ${invite}`);
 });
+// Presence is not re-sent after a gateway re-identify; restore it every time a shard is ready.
+client.on(Events.ShardReady, () => refreshActivity());
+client.on(Events.ShardDisconnect, (e) => console.error('Gateway disconnected:', e?.code ?? ''));
+client.on(Events.ShardError, (e) => console.error('Gateway error:', e.message));
 
-client.on('guildCreate', (guild) => registerCommands(guild.id));
+client.on(Events.GuildCreate, (guild) => registerCommands(guild.id));
+// Removed from a server: stop its stream processes and forget its session.
+client.on(Events.GuildDelete, (guild) => leaveGuild(guild.id));
+// The log channel was deleted: forget it so replies don't get doubled or lost.
+client.on(Events.ChannelDelete, (ch) => {
+  const g = guildSettings[ch.guildId];
+  if (g?.channel === ch.id) { delete g.channel; saveSettings(); }
+});
 
-// Auto-leave when the bot is alone in the voice channel.
-client.on('voiceStateUpdate', (oldState, newState) => {
-  const guild = oldState.guild || newState.guild;
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const guild = newState.guild || oldState.guild;
   const s = guilds.get(guild.id);
-  if (!s || !s.connection) return;
+  if (!s || !s.connection || s.leaving) return;
+  // The bot itself was disconnected (a moderator's Disconnect, a kick, or its channel was deleted):
+  // leave instead of fighting it. Our own rejoin always happens while the connection is Signalling.
+  if (newState.id === client.user.id) {
+    s.kicked = !newState.channelId; // read by the reconnect loop
+    if (s.kicked && s.connection.state.status !== VoiceConnectionStatus.Signalling) {
+      return leaveGuild(guild.id, '👋 Left — I was disconnected from the voice channel.');
+    }
+  }
   const channel = guild.channels.cache.get(s.connection.joinConfig.channelId);
-  if (!channel) return;
+  if (!channel) return leaveGuild(guild.id, '👋 Left — my voice channel was removed.');
+  // Auto-leave when the bot is alone in the voice channel.
   const humans = channel.members.filter((m) => !m.user.bot).size;
   if (humans === 0) {
     if (!s.leaveTimer) {
@@ -451,94 +638,105 @@ client.on('voiceStateUpdate', (oldState, newState) => {
   }
 });
 
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const s = getState(interaction.guildId);
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand() || !interaction.guildId) return;
+  const gid = interaction.guildId;
+  const s = getState(gid);
   const cmd = interaction.commandName;
-  s.textChannel = interaction.channel; // post auto-advance messages here
+
+  // Playback controls only from the bot's voice channel, so nobody outside it can wreck the session.
+  const botCh = s.connection?.joinConfig.channelId;
+  if (CONTROL.has(cmd) && botCh && interaction.member?.voice?.channelId !== botCh
+      && !interaction.memberPermissions?.has(ADMIN)) {
+    return interaction.reply({ content: `Join <#${botCh}> to control playback.`, flags: MessageFlags.Ephemeral }).catch(() => {});
+  }
+  if (interaction.channel) s.textChannel = interaction.channel; // post auto-advance messages here
 
   const run = async () => {
   if (cmd === 'play') {
     await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
-    const query = interaction.options.getString('query');
+    if (s.resolving >= 3) return interaction.editReply('Still fetching earlier requests — try again in a moment.');
+    s.resolving++;
+    let tracks;
     try {
-      const tracks = await resolveTracks(query);
-      const startNow = s.queue.length === 0;
-      const by = interaction.user.username;
-      s.queue.push(...tracks.map((t) => ({ ...t, requestedBy: by })));
-      const dedicated = Boolean(guildSettings[interaction.guildId]?.channel);
-      if (startNow) {
-        await playNext(interaction.guildId);
-        if (dedicated) announceNowPlaying(interaction.guildId, s, tracks[0]); // embed to the set channel
-      }
-      if (tracks.length === 1) {
-        if (startNow && !dedicated) return interaction.editReply({ embeds: [nowPlayingEmbed(tracks[0])] });
-        return interaction.editReply(startNow
-          ? `▶️ Playing **${tracks[0].title}**`
-          : `➕ Queued **${tracks[0].title}** (position ${s.queue.length})`);
-      }
-      return interaction.editReply(`➕ Added **${tracks.length}** songs from the playlist.${startNow ? ` Now playing **${tracks[0].title}**` : ''}`);
+      tracks = await resolveTracks(interaction.options.getString('query'));
     } catch (e) {
-      console.error(e);
+      if (!e.userFacing) console.error('Lookup failed:', e.message);
       // If the bot joined but nothing is queued, don't sit idle forever.
-      if (!s.queue.length && s.connection) scheduleIdleLeave(s, interaction.guildId, '👋 Left — nothing to play.');
-      return interaction.editReply('Something broke fetching that track.');
+      if (guilds.get(gid) === s && !s.queue.length && s.connection) scheduleIdleLeave(s, gid, '👋 Left — nothing to play.');
+      return interaction.editReply(e.userFacing ? `❌ Couldn't load that: ${md(e.message)}` : '❌ Something went wrong fetching that — try again.');
+    } finally { s.resolving--; }
+    if (guilds.get(gid) !== s || s.leaving) return interaction.editReply('Playback was stopped meanwhile — run /play again.');
+    const { add, startNow } = enqueue(s, gid, tracks, interaction.user.username);
+    if (!add.length) return interaction.editReply(`The queue is full (${MAX_QUEUE} songs).`);
+    const dedicated = Boolean(logChannel(gid));
+    if (startNow && dedicated) announceNowPlaying(gid, s, s.queue[0]); // embed to the set channel
+    if (tracks.length === 1) {
+      if (startNow && !dedicated) return interaction.editReply({ embeds: [nowPlayingEmbed(s.queue[0])] });
+      return interaction.editReply(startNow
+        ? `▶️ Playing **${md(add[0].title)}**`
+        : `➕ Queued **${md(add[0].title)}** (position ${s.queue.length - 1})`);
     }
+    const capped = add.length < tracks.length ? ` (queue limit reached — ${tracks.length - add.length} left out)`
+      : tracks.length >= MAX_ADD ? ` (first ${MAX_ADD} only)` : '';
+    return interaction.editReply(`➕ Added **${add.length}** songs from the playlist${capped}.${startNow ? ` Now playing **${md(add[0].title)}**` : ''}`);
   }
 
   if (cmd === 'load') {
+    // Check the name before joining, so a typo doesn't leave the bot sitting in voice.
+    const name = resolvePlaylistName(gid, interaction.options.getString('name'));
+    const saved = name ? playlists[gid][name] : null;
+    if (!Array.isArray(saved) || !saved.length) return respond(interaction, s, 'No saved playlist by that name/number. See /playlists.', false);
     await interaction.deferReply();
     if (!(await ensureConnection(interaction, s))) return;
-    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
-    const saved = name && playlists[interaction.guildId]?.[name];
-    if (!saved || !saved.length) return interaction.editReply('No saved playlist by that name/number. See /playlists.');
-    const startNow = s.queue.length === 0;
-    const by = interaction.user.username;
-    s.queue.push(...saved.map((t) => ({ ...t, requestedBy: by })));
-    if (startNow) {
-      await playNext(interaction.guildId);
-      if (guildSettings[interaction.guildId]?.channel) announceNowPlaying(interaction.guildId, s, saved[0]);
-    }
-    return interaction.editReply(`📂 Loaded **${saved.length}** songs from **${name}**.${startNow ? ` Now playing **${saved[0].title}**` : ''}`);
+    const { add, startNow } = enqueue(s, gid, saved, interaction.user.username);
+    if (!add.length) return interaction.editReply(`The queue is full (${MAX_QUEUE} songs).`);
+    if (startNow && logChannel(gid)) announceNowPlaying(gid, s, s.queue[0]);
+    return interaction.editReply(`📂 Loaded **${add.length}** songs from **${md(name)}**.${startNow ? ` Now playing **${md(add[0].title)}**` : ''}`);
   }
 
-  if (cmd === 'pause') { s.player?.pause(); return respond(interaction, s, '⏸️ Paused.'); }
-  if (cmd === 'resume') { s.player?.unpause(); return respond(interaction, s, '▶️ Resumed.'); }
+  if (cmd === 'pause') {
+    if (!s.player?.pause()) return respond(interaction, s, 'Nothing is playing right now.', false);
+    return respond(interaction, s, '⏸️ Paused.');
+  }
+  if (cmd === 'resume') {
+    if (!s.player?.unpause()) return respond(interaction, s, 'Nothing is paused.', false);
+    return respond(interaction, s, '▶️ Resumed.');
+  }
 
   if (cmd === 'skip' || cmd === 'next') {
     if (!s.queue.length) return respond(interaction, s, 'Nothing to skip.', false);
+    if (s.loop === 'queue') s.queue.push(s.queue[0]); // queue-loop: skipping keeps it in the rotation
     const upcoming = s.queue[1];
-    s.suppressAnnounce = true;
-    s.player?.stop();
+    skipCurrent(s, gid);
     return respond(interaction, s, upcoming
-      ? `⏭️ Skipped — now playing **${upcoming.title}**`
+      ? `⏭️ Skipped — now playing **${md(upcoming.title)}**`
       : '⏭️ Skipped — queue is empty.');
   }
   if (cmd === 'jump') {
     const pos = interaction.options.getInteger('position');
     if (pos < 1 || pos >= s.queue.length) return respond(interaction, s, 'No song at that position — check /queue.', false);
+    if (s.loop === 'queue') s.queue.push(s.queue[0]);
     const [track] = s.queue.splice(pos, 1);
     s.queue.splice(1, 0, track);
-    s.suppressAnnounce = true;
-    s.player?.stop();
-    return respond(interaction, s, `⏭️ Playing **${track.title}** next — the rest stays queued.`);
+    skipCurrent(s, gid);
+    return respond(interaction, s, `⏭️ Playing **${md(track.title)}** next — the rest stays queued.`);
   }
   if (cmd === 'cut') {
     const pos = interaction.options.getInteger('position');
     if (pos < 1 || pos >= s.queue.length) return respond(interaction, s, 'No song at that position — check /queue.', false);
     s.queue.splice(1, pos - 1);
     const target = s.queue[1].title;
-    s.suppressAnnounce = true;
-    s.player?.stop();
-    return respond(interaction, s, `✂️ Cut to **${target}** — earlier songs removed.`);
+    skipCurrent(s, gid);
+    return respond(interaction, s, `✂️ Cut to **${md(target)}** — earlier songs removed.`);
   }
   if (cmd === 'remove') {
     const nums = parseNumberList(interaction.options.getString('positions'));
     const idxs = nums.filter((n) => n >= 1 && n < s.queue.length).sort((a, b) => b - a);
     if (!idxs.length) return respond(interaction, s, 'No valid positions — check /queue (can\'t remove the current song).', false);
     const removed = idxs.map((i) => s.queue.splice(i, 1)[0]).reverse();
-    return respond(interaction, s, `🗑️ Removed ${removed.length} song(s):\n${removed.map((t) => `• ${t.title}`).join('\n')}`.slice(0, 1900));
+    return respond(interaction, s, fitLines(removed.map((t) => `• ${md(t.title)}`), `🗑️ Removed ${removed.length} song(s):`));
   }
   if (cmd === 'clear') {
     if (s.queue.length <= 1) return respond(interaction, s, 'The queue is already empty.', false);
@@ -567,160 +765,163 @@ client.on('interactionCreate', async (interaction) => {
     return respond(interaction, s, { embeds: [nowPlayingEmbed(cur)] }, false);
   }
   if (cmd === 'stop') {
-    leaveGuild(interaction.guildId);
-    return respond(interaction, s, '⏹️ Stopped and left.');
+    const wasConnected = Boolean(s.connection);
+    leaveGuild(gid);
+    return respond(interaction, s, wasConnected ? '⏹️ Stopped and left.' : 'I\'m not playing anything.', wasConnected);
   }
   if (cmd === 'queue' || cmd === 'list') {
     if (!s.queue.length) return respond(interaction, s, 'Queue is empty.', false);
-    const loopNote = s.loop !== 'off' ? `  (loop: ${s.loop})` : '';
-    const list = s.queue
-      .map((t, i) => `${i === 0 ? '▶️' : `${i}.`} ${t.title} — *${t.requestedBy}*`)
-      .join('\n');
-    return respond(interaction, s, (list + loopNote).slice(0, 1900), false);
+    const loopNote = s.loop !== 'off' ? ` · loop: ${s.loop}` : '';
+    const lines = s.queue.map((t, i) => `${i === 0 ? '▶️' : `${i}.`} ${md(t.title)} — *${md(t.requestedBy)}*`);
+    return respond(interaction, s, fitLines(lines, `**Queue** (${s.queue.length} song${s.queue.length === 1 ? '' : 's'}${loopNote})`), false);
   }
   if (cmd === 'save') {
-    const name = interaction.options.getString('name').toLowerCase().trim();
-    if (/^\d+$/.test(name)) return interaction.reply('Playlist names can\'t be only numbers (that clashes with position numbers) — add some letters.');
-    if (!name) return interaction.reply('Give the playlist a name.');
-    if (!s.queue.length) return interaction.reply('Queue is empty — nothing to save.');
-    const exists = playlists[interaction.guildId]?.[name];
-    const btn = await askYesNo(interaction,
-      `Save the current queue (**${s.queue.length}** songs) as **${name}**?${exists ? '\n⚠️ A playlist with that name already exists — this will overwrite it.' : ''}`,
-      Boolean(exists));
-    if (!btn) return;
-    if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing saved.', components: [] });
-    (playlists[interaction.guildId] ??= {})[name] = s.queue.map((t) => ({
+    const name = normName(interaction.options.getString('name'));
+    if (!name) return respond(interaction, s, 'Give the playlist a name.', false);
+    if (/^\d+$/.test(name)) return respond(interaction, s, 'Playlist names can\'t be only numbers (that clashes with position numbers) — add some letters.', false);
+    if (name === '__proto__') return respond(interaction, s, 'That name isn\'t allowed — pick another.', false);
+    if (!s.queue.length) return respond(interaction, s, 'Queue is empty — nothing to save.', false);
+    const exists = Object.hasOwn(playlists[gid] ?? {}, name);
+    // Snapshot now: the queue can change (or empty) while the question is open.
+    const snap = s.queue.slice(0, MAX_QUEUE).map((t) => ({
       title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null,
     }));
-    savePlaylists();
-    return btn.update({ content: `💾 Saved **${s.queue.length}** songs as playlist **${name}**.`, components: [] });
+    const btn = await askYesNo(interaction,
+      `Save the current queue (**${snap.length}** songs) as **${md(name)}**?${exists ? '\n⚠️ A playlist with that name already exists — this will overwrite it.' : ''}`,
+      exists);
+    if (!btn) return;
+    if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing saved.', components: [] });
+    (playlists[gid] ??= {})[name] = snap;
+    const ok = savePlaylists();
+    return btn.update({
+      content: ok ? `💾 Saved **${snap.length}** songs as playlist **${md(name)}**.` : '⚠️ Couldn\'t write the playlist file — check the bot\'s logs.',
+      components: [],
+    });
   }
   if (cmd === 'playlists') {
-    const g = playlists[interaction.guildId] || {};
+    const g = playlists[gid] || {};
     const names = Object.keys(g);
     if (!names.length) return respond(interaction, s, 'No saved playlists yet. Save one with `/save <name>`.', false);
-    return respond(interaction, s, '📚 **Saved playlists:**\n' + names.map((n, i) => `${i + 1}. ${n} (${g[n].length} songs)`).join('\n'), false);
+    return respond(interaction, s, fitLines(names.map((n, i) => `${i + 1}. ${md(n)} (${g[n].length} songs)`), '📚 **Saved playlists:**'), false);
   }
   if (cmd === 'showplaylist') {
-    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('name'));
+    const name = resolvePlaylistName(gid, interaction.options.getString('name'));
     if (!name) return respond(interaction, s, 'No such playlist. See /playlists.', false);
-    const songs = playlists[interaction.guildId][name];
-    const list = songs.map((t, i) => `${i + 1}. ${t.title}`).join('\n');
-    return respond(interaction, s, `📃 **${name}** (${songs.length} songs)\n${list}`.slice(0, 1900), false);
+    const songs = playlists[gid][name];
+    return respond(interaction, s, fitLines(songs.map((t, i) => `${i + 1}. ${md(t.title)}`), `📃 **${md(name)}** (${songs.length} songs)`), false);
   }
   if (cmd === 'removefromplaylist') {
-    const name = resolvePlaylistName(interaction.guildId, interaction.options.getString('playlist'));
+    const name = resolvePlaylistName(gid, interaction.options.getString('playlist'));
     if (!name) return interaction.reply('No such playlist. See /playlists.');
-    const songs = playlists[interaction.guildId][name];
+    const songs = playlists[gid][name];
     const songInput = interaction.options.getString('song').trim();
-    const nums = parseNumberList(songInput);
+    if (!songInput) return interaction.reply('Give a song number or part of its title.');
+    // Number mode only for a pure list of numbers, so a title like "Mambo No 5" is searched by name.
+    const nums = /^[\d\s,]+$/.test(songInput) ? parseNumberList(songInput) : [];
     let removed;
     if (nums.length) {
       const idxs = nums.map((n) => n - 1).filter((i) => i >= 0 && i < songs.length).sort((a, b) => b - a);
-      if (!idxs.length) return interaction.reply(`No valid song numbers in **${name}**. Try /showplaylist ${name}.`);
+      if (!idxs.length) return interaction.reply(`No valid song numbers in **${md(name)}**. Try /showplaylist ${md(name)}.`);
       removed = idxs.map((i) => songs.splice(i, 1)[0]).reverse();
     } else {
-      const idx = songs.findIndex((t) => t.title.toLowerCase().includes(songInput.toLowerCase()));
-      if (idx < 0) return interaction.reply(`Couldn't find that song in **${name}**. Try /showplaylist ${name}.`);
+      const idx = songs.findIndex((t) => String(t.title).toLowerCase().includes(songInput.toLowerCase()));
+      if (idx < 0) return interaction.reply(`Couldn't find that song in **${md(name)}**. Try /showplaylist ${md(name)}.`);
       removed = [songs.splice(idx, 1)[0]];
     }
     let note;
-    if (songs.length === 0) { delete playlists[interaction.guildId][name]; note = ' Playlist is now empty and was removed.'; }
-    else note = ` (${songs.length} left)`;
+    if (songs.length === 0) { delete playlists[gid][name]; note = 'Playlist is now empty and was removed.'; }
+    else note = `(${songs.length} left)`;
     savePlaylists();
-    return interaction.reply(`🗑️ Removed ${removed.length} song(s) from **${name}**:\n${removed.map((t) => `• ${t.title}`).join('\n')}${note}`.slice(0, 1900));
+    return interaction.reply(fitLines(removed.map((t) => `• ${md(t.title)}`), `🗑️ Removed ${removed.length} song(s) from **${md(name)}**:`, `\n${note}`));
   }
   if (cmd === 'deleteplaylist') {
-    const g = playlists[interaction.guildId];
+    const g = playlists[gid];
     if (!g || !Object.keys(g).length) return interaction.reply('No saved playlists. See /playlists.');
-    const tokens = interaction.options.getString('name').split(/[\s,]+/).filter(Boolean);
-    const targets = [...new Set(tokens.map((t) => resolvePlaylistName(interaction.guildId, t)).filter(Boolean))];
+    // Try the whole input as one name first ("road trip"), then as a list ("rock, chill" / "1 3").
+    const raw = interaction.options.getString('name').trim();
+    const whole = resolvePlaylistName(gid, raw);
+    const parts = whole ? [raw] : raw.split(raw.includes(',') ? ',' : /\s+/);
+    const targets = [...new Set(parts.map((t) => resolvePlaylistName(gid, t)).filter(Boolean))];
     if (!targets.length) return interaction.reply('No matching playlists — see /playlists.');
-    const btn = await askYesNo(interaction,
-      `⚠️ Delete ${targets.length} saved playlist(s): **${targets.join(', ')}**?\nThis can't be undone.`, true);
+    const list = md(targets.join(', ')).slice(0, 1500);
+    const btn = await askYesNo(interaction, `⚠️ Delete ${targets.length} saved playlist(s): **${list}**?\nThis can't be undone.`, true);
     if (!btn) return;
     if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing deleted.', components: [] });
     targets.forEach((n) => delete g[n]);
     savePlaylists();
-    return btn.update({ content: `🗑️ Deleted: **${targets.join(', ')}**.`, components: [] });
+    return btn.update({ content: `🗑️ Deleted: **${list}**.`, components: [] });
   }
   if (cmd === 'deleteallplaylists') {
-    const count = Object.keys(playlists[interaction.guildId] || {}).length;
+    const count = Object.keys(playlists[gid] || {}).length;
     if (!count) return interaction.reply('No saved playlists to delete.');
     const btn = await askYesNo(interaction,
       `⚠️ **Delete ALL ${count} saved playlist(s) on this server?**\nThis cannot be undone.`, true);
     if (!btn) return;
     if (btn.customId === 'no') return btn.update({ content: 'Cancelled — nothing deleted.', components: [] });
-    delete playlists[interaction.guildId];
+    delete playlists[gid];
     savePlaylists();
     return btn.update({ content: `🗑️ Deleted all **${count}** saved playlist(s).`, components: [] });
   }
   if (cmd === 'addtoplaylist') {
-    const g = playlists[interaction.guildId];
-    const names = g ? Object.keys(g) : [];
-    if (!names.length) return interaction.reply('No saved playlists yet. Create one with /save first.');
-    const input = interaction.options.getString('name').trim();
-    let name;
-    if (/^\d+$/.test(input)) {
-      const idx = parseInt(input, 10) - 1;
-      if (idx < 0 || idx >= names.length) return interaction.reply(`No playlist #${input}. See /playlists.`);
-      name = names[idx];
-    } else {
-      name = input.toLowerCase();
-    }
-    if (!g[name]) return interaction.reply(`No saved playlist **${input}**. See /playlists.`);
-
+    const name = resolvePlaylistName(gid, interaction.options.getString('name'));
+    if (!name) return interaction.reply('No such playlist — create one with /save first, or see /playlists.');
     const song = interaction.options.getString('song');
     let toAdd;
     if (song) {
       await interaction.deferReply();
       try {
-        toAdd = (await resolveTracks(song)).map((t) => ({
-          title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null,
-        }));
+        toAdd = await resolveTracks(song);
       } catch (e) {
-        console.error(e);
-        return interaction.editReply('Could not find that song.');
+        if (!e.userFacing) console.error('Lookup failed:', e.message);
+        return interaction.editReply(e.userFacing ? `❌ Couldn't load that: ${md(e.message)}` : '❌ Could not find that song.');
       }
     } else {
       const cur = s.queue[0];
       if (!cur) return interaction.reply('Nothing is playing — give a song, or play one first.');
-      toAdd = [{ title: cur.title, url: cur.url, duration: cur.duration ?? null, thumbnail: cur.thumbnail ?? null }];
+      toAdd = [cur];
     }
-    g[name].push(...toAdd);
+    const list = playlists[gid]?.[name]; // re-read: it may have been deleted during the lookup
+    const say = (m) => (song ? interaction.editReply(m) : interaction.reply(m));
+    if (!Array.isArray(list)) return say('That playlist was deleted meanwhile.');
+    const room = MAX_QUEUE - list.length;
+    if (room <= 0) return say(`**${md(name)}** is full (${MAX_QUEUE} songs).`);
+    const added = toAdd.slice(0, room).map((t) => ({
+      title: t.title, url: t.url, duration: t.duration ?? null, thumbnail: t.thumbnail ?? null,
+    }));
+    list.push(...added);
     savePlaylists();
-    const reply = toAdd.length === 1
-      ? `➕ Added **${toAdd[0].title}** to **${name}** (now ${g[name].length} songs).`
-      : `➕ Added **${toAdd.length}** songs to **${name}** (now ${g[name].length} songs).`;
-    return song ? interaction.editReply(reply) : interaction.reply(reply);
+    return say(added.length === 1
+      ? `➕ Added **${md(added[0].title)}** to **${md(name)}** (now ${list.length} songs).`
+      : `➕ Added **${added.length}** songs to **${md(name)}** (now ${list.length} songs).`);
   }
   if (cmd === 'setchannel') {
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+    if (!interaction.memberPermissions?.has(ADMIN)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to set this.', flags: MessageFlags.Ephemeral });
     }
     const target = interaction.options.getChannel('channel') || interaction.channel;
-    gset(interaction.guildId).channel = target.id;
+    if (!target) return interaction.reply({ content: 'Pick a channel with the `channel` option.', flags: MessageFlags.Ephemeral });
+    gset(gid).channel = target.id;
     saveSettings();
-    const canSend = target.permissionsFor(client.user)?.has(PermissionFlagsBits.SendMessages);
+    const canSend = target.permissionsFor?.(client.user)?.has(PermissionFlagsBits.SendMessages);
     return interaction.reply(`✅ I'll post the log in <#${target.id}> from now on. Commands work in any channel; use /autodelete to auto-clear my replies from the command channel.${canSend ? '' : '\n⚠️ Heads up: I may not have permission to send messages there — give me access to that channel.'}`);
   }
   if (cmd === 'resetchannel') {
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+    if (!interaction.memberPermissions?.has(ADMIN)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
     }
-    delete gset(interaction.guildId).channel;
+    delete gset(gid).channel;
     saveSettings();
     return interaction.reply('✅ Announcements will now go to wherever the command is used (default).');
   }
   if (cmd === 'createchannel') {
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+    if (!interaction.memberPermissions?.has(ADMIN)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to do this.', flags: MessageFlags.Ephemeral });
     }
     await interaction.deferReply();
     const name = (interaction.options.getString('name') || 'music-bot').slice(0, 90);
     try {
       const ch = await interaction.guild.channels.create({ name, reason: 'Music bot announcements channel' });
-      gset(interaction.guildId).channel = ch.id;
+      gset(gid).channel = ch.id;
       saveSettings();
       return interaction.editReply(`✅ Created <#${ch.id}> — I'll post now-playing and announcements there.`);
     } catch (e) {
@@ -729,32 +930,27 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
   if (cmd === 'autodelete') {
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels)) {
+    if (!interaction.memberPermissions?.has(ADMIN)) {
       return interaction.reply({ content: 'You need the **Manage Channels** permission to change this.', flags: MessageFlags.Ephemeral });
     }
     const raw = interaction.options.getString('value').trim().toLowerCase();
     let secs;
     if (['off', 'none', 'no', 'false', '0'].includes(raw)) secs = 0;
-    else {
-      secs = parseInt(raw, 10);
-      if (Number.isNaN(secs) || secs < 0) {
-        return interaction.reply({ content: 'Give a number of seconds (e.g. `30`) or `off`.', flags: MessageFlags.Ephemeral });
-      }
-      secs = Math.min(secs, 900);
-    }
-    const g = gset(interaction.guildId);
+    else if (/^\d+$/.test(raw)) secs = Math.min(Number(raw), 840); // replies can only be deleted within ~15 min
+    else return interaction.reply({ content: 'Give a whole number of seconds (e.g. `30`) or `off`.', flags: MessageFlags.Ephemeral });
+    const g = gset(gid);
     if (secs > 0) g.autoDelete = secs; else delete g.autoDelete;
     saveSettings();
     return interaction.reply(secs > 0
-      ? `🧹 I'll auto-delete my command replies after **${secs}s**. (Now-playing posts in the set channel stay.)`
+      ? `🧹 I'll auto-delete my command replies after **${secs}s**. (Posts in the log channel stay.)`
       : '🧹 Auto-delete turned **off** — my command replies will stay.');
   }
   if (cmd === 'help') {
     return respond(interaction, s, [
       '**🎵 Music bot — commands**',
       '',
-      '__Playback__',
-      '`/play <url or search>` — play a YouTube link or playlist, or search by name',
+      '__Playback__ (controls work from the bot\'s voice channel)',
+      '`/play <link or search>` — play a YouTube link or playlist, or search by name',
       '`/pause` — pause the current song',
       '`/resume` — resume playback',
       '`/skip` (or `/next`) — skip to the next song',
@@ -777,16 +973,16 @@ client.on('interactionCreate', async (interaction) => {
       '`/showplaylist <name|#>` — show the songs in a playlist',
       '`/addtoplaylist <name> [song]` — add a song (or the current one) to a playlist',
       '`/removefromplaylist <name> <n[,n...]|title>` — remove song(s) from a playlist',
+      '',
+      '__Admin (needs Manage Channels)__',
       '`/deleteplaylist <name/# [,...]>` — delete one or more playlists',
       '`/deleteallplaylists` — delete every saved playlist',
-      '',
-      '__Setup (needs Manage Channels)__',
       '`/setchannel [channel]` — post now-playing/log to a channel (default: current)',
       '`/resetchannel` — go back to replying where the command is used',
       '`/createchannel [name]` — create a channel and use it for the log',
-      '`/autodelete <seconds|off>` — auto-delete command replies after N sec (or off)',
+      '`/autodelete <seconds|off>` — auto-delete command replies after N sec (max 840)',
       '',
-      '`/help` — show this message',
+      '`/help` — show this message · Volume: right-click the bot → User Volume',
     ].join('\n'), false);
   }
   };
@@ -801,28 +997,65 @@ client.on('interactionCreate', async (interaction) => {
     } catch { /* nothing more we can do */ }
   }
 
-  // /autodelete is the on/off switch: on -> remove the reply from the command
-  // channel after the delay; off -> it stays. (The log channel keeps its own copy.)
-  const secs = Number(guildSettings[interaction.guildId]?.autoDelete) || 0;
-  if (secs > 0) setTimeout(() => interaction.deleteReply().catch(() => {}), secs * 1000);
+  // /autodelete is the on/off switch: on -> remove the reply from the command channel after the
+  // delay; off -> it stays. (The log channel keeps its own copy.) Timed from when the command was
+  // used, because Discord only lets a reply be deleted for ~15 min after that.
+  const secs = Number(guildSettings[gid]?.autoDelete) || 0;
+  if (secs > 0 && !interaction.keepReply) {
+    const wait = Math.min(secs * 1000, 14.5 * 60_000 - (Date.now() - interaction.createdTimestamp));
+    setTimeout(() => interaction.deleteReply().catch(() => {}), Math.max(0, wait));
+  }
 });
 
-client.on('error', (e) => console.error('Client error:', e.message));
-process.on('unhandledRejection', (e) => console.error('Unhandled:', e?.message || e));
+client.on(Events.Error, (e) => console.error('Client error:', e.message));
+process.on('unhandledRejection', (e) => console.error('Unhandled:', e?.stack || e?.message || e));
+process.on('uncaughtException', (e) => { console.error('Fatal:', e?.stack || e); process.exit(1); }); // the watchdog restarts us
 
 // Windows: keep the PC awake while the bot runs, so sleep doesn't pause playback.
 // The helper watches this process and exits (releasing the request) when the bot stops.
 // Encoded command avoids quoting issues with the embedded C# signature.
-if (process.platform === 'win32' && config.keepAwake) {
+function startKeepAwake() {
   const cmd = `$p=${process.pid};$s='[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);';$api=Add-Type -MemberDefinition $s -Name Pw -Namespace Win32 -PassThru;while(Get-Process -Id $p -ErrorAction SilentlyContinue){[void]$api::SetThreadExecutionState(2147483649);Start-Sleep -Seconds 50}`;
   try {
     const encoded = Buffer.from(cmd, 'utf16le').toString('base64');
     // NOTE: not detached — a detached+ignored child dies instantly on Windows here.
-    // The helper self-exits when it sees this process gone (watches our PID).
     const ka = spawn('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded],
-      { stdio: 'ignore' });
+      { stdio: 'ignore', windowsHide: true });
     ka.unref();
   } catch (e) { console.error('keep-awake failed:', e.message); }
 }
 
-client.login(process.env.TOKEN);
+// Retry login while the network comes up (e.g. right after sign-in); a bad token is final.
+function login() {
+  client.login(process.env.TOKEN).catch((e) => {
+    console.error('Login failed:', e.message);
+    if (e.code === 'TokenInvalid') process.exit(1);
+    setTimeout(login, 15_000);
+  });
+}
+
+function start() {
+  if (!process.env.TOKEN) {
+    console.error('No TOKEN in .env — run "First Time Setup.bat" or add TOKEN=... to .env');
+    process.exit(1);
+  }
+  if (process.platform === 'win32' && config.keepAwake) startKeepAwake();
+  // One copy per bot: a second one would answer every command twice and overwrite playlists.json
+  // from stale memory. The OS frees the pipe name the moment this process dies.
+  const appId = Buffer.from(process.env.TOKEN.split('.')[0], 'base64').toString().replace(/\D/g, '') || 'bot';
+  net.createServer()
+    .on('error', (e) => {
+      if (e.code === 'EADDRINUSE') { console.error('Another copy of the bot is already running — exiting.'); process.exit(1); }
+      console.error('Instance lock unavailable (' + e.message + ') — starting anyway.');
+      login();
+    })
+    .listen(`\\\\.\\pipe\\discord-music-bot-${appId}`, login)
+    .unref();
+}
+
+// `node bot.js` runs the bot; `require('./bot.js')` (test.js) only loads the helpers.
+if (require.main === module) start();
+module.exports = {
+  resolveTracks, resolvePlaylistName, parseNumberList, normName, fitLines, ytdlpReason, fmtDuration,
+  nowPlayingEmbed, md, playlists, commands, killTree, YTDLP_BASE,
+};

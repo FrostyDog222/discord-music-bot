@@ -2,8 +2,12 @@ node_modules/
 .env
 bot.log
 bot.err
+*.prev
+watchdog.log
 playlists.json
 config.json
 channels.json
 settings.json
+*.tmp
+*.corrupt-*
 .stopped

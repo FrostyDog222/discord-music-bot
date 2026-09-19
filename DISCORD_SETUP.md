@@ -33,7 +33,7 @@ whoever opens it is automatically prompted to grant exactly what the bot needs
 — View Channels, Send Messages, Connect, Speak, and Manage Channels for the
 optional `/createchannel`). Get your link from:
 
-- the dashboard: **Music Bot.bat → [6] Show invite link**, or
+- the dashboard: **Music Bot.bat → [7] Show invite link**, or
 - the console / `bot.log` when the bot starts (it prints "Invite link: ...").
 
 It looks like this (with **your** Application ID filled in):
