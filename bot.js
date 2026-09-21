@@ -185,19 +185,28 @@ function killTree(p) {
   }
 }
 
+// Queue the whole playlist for any real one, including the watch?v=X&list=... link you get by
+// opening a song inside it. Mixes/radio (RD...) are endless and Watch later/Liked (WL/LL) are
+// private, so those play just the linked song.
+function wantsPlaylist(u) {
+  const list = u.searchParams.get('list') || '';
+  return Boolean(list) && !/^(RD|WL|LL)/i.test(list);
+}
+
 // Resolve a YouTube link, playlist, or search term to [{ title, url, duration, thumbnail }].
 function resolveTracks(query) {
   const q = String(query).trim();
   let target = `ytsearch1:${q}`;
   let isPlaylist = false;
+  let startAt = ''; // the song the link points at, when it was opened inside a playlist
   if (/^https?:\/\//i.test(q)) {
     let u = null;
     try { u = new URL(q); } catch { /* not a valid URL */ }
     if (!u || !YT_HOST.test(u.hostname)) return Promise.reject(userError('Only YouTube links are supported.'));
     target = u.href; // pass the normalized URL we checked, never the raw string
-    // Only a real playlist page is a playlist. watch?v=X&list=... (a Mix/radio link, or a song
-    // opened inside a playlist) plays just that song instead of queueing hundreds.
-    isPlaylist = u.searchParams.has('list') && !u.searchParams.has('v') && !/youtu\.be$/i.test(u.hostname);
+    isPlaylist = wantsPlaylist(u);
+    const id = u.searchParams.get('v') || (/youtu\.be$/i.test(u.hostname) ? u.pathname.slice(1) : '');
+    if (isPlaylist && /^[\w-]{11}$/.test(id)) startAt = id;
   }
   const args = [
     ...YTDLP_BASE, '--encoding', 'utf-8', // Windows pipes default to cp1252 and mangle non-Latin titles
@@ -237,7 +246,9 @@ function resolveTracks(query) {
         .slice(0, MAX_ADD)
         .map(({ ie, ...t }) => t);
       if (!tracks.length) return reject(userError('No results found.'));
-      resolve(tracks);
+      // Start where the link pointed (like YouTube does), then continue through the playlist.
+      const at = startAt ? tracks.findIndex((t) => t.url.includes(startAt)) : -1;
+      resolve(at > 0 ? tracks.slice(at).concat(tracks.slice(0, at)) : tracks);
     });
   });
 }
@@ -1057,5 +1068,5 @@ function start() {
 if (require.main === module) start();
 module.exports = {
   resolveTracks, resolvePlaylistName, parseNumberList, normName, fitLines, ytdlpReason, fmtDuration,
-  nowPlayingEmbed, md, playlists, commands, killTree, YTDLP_BASE,
+  nowPlayingEmbed, md, playlists, commands, killTree, YTDLP_BASE, wantsPlaylist,
 };

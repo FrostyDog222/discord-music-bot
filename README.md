@@ -84,9 +84,11 @@ nobody outside the call can wreck the session.
 The live queue lives in memory only (resets on restart). The bot **auto-leaves**
 when it's alone in the channel (5 min) or when the queue finishes (1 min).
 
-> **Links:** a link to one song (even one opened inside a playlist or a YouTube
-> Mix) plays just that song; a **playlist page** link (`youtube.com/playlist?list=…`)
-> adds the playlist. Only YouTube links are accepted.
+> **Links:** any playlist link adds the playlist (up to 200 songs) — both a
+> playlist page (`youtube.com/playlist?list=…`) and a song opened inside one
+> (`watch?v=…&list=…`), which starts the queue at that song. A plain song link,
+> a YouTube **Mix**/radio (`list=RD…`) or Watch later/Liked plays just that one
+> song. Only YouTube links are accepted.
 
 > **Keeping chat clean:** commands work in any channel. Set a log channel with
 > `/setchannel` (or `/createchannel`) to keep a persistent now-playing/activity

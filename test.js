@@ -5,10 +5,20 @@ const bot = require('./bot.js');
 
 const {
   parseNumberList, fmtDuration, normName, resolvePlaylistName, ytdlpReason, fitLines,
-  nowPlayingEmbed, md, playlists, commands, resolveTracks,
+  nowPlayingEmbed, md, playlists, commands, resolveTracks, wantsPlaylist,
 } = bot;
 
 (async () => {
+  // Which links queue a whole playlist
+  const pl = (u) => wantsPlaylist(new URL(u));
+  assert.equal(pl('https://www.youtube.com/playlist?list=PLabc'), true);
+  assert.equal(pl('https://www.youtube.com/watch?v=abc&list=PLabc'), true, 'a song opened inside a playlist queues the playlist');
+  assert.equal(pl('https://youtu.be/abc?list=PLabc'), true);
+  assert.equal(pl('https://music.youtube.com/watch?v=abc&list=OLAK5uy_abc'), true);
+  assert.equal(pl('https://www.youtube.com/watch?v=abc&list=RDabc'), false, 'Mixes are endless');
+  assert.equal(pl('https://www.youtube.com/watch?v=abc&list=WL'), false);
+  assert.equal(pl('https://www.youtube.com/watch?v=abc'), false);
+
   // parseNumberList
   assert.deepEqual(parseNumberList('2,3,5'), [2, 3, 5]);
   assert.deepEqual(parseNumberList('2 2  3'), [2, 3]);
