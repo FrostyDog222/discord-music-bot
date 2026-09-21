@@ -18,6 +18,9 @@ const {
   assert.equal(pl('https://www.youtube.com/watch?v=abc&list=RDabc'), false, 'Mixes are endless');
   assert.equal(pl('https://www.youtube.com/watch?v=abc&list=WL'), false);
   assert.equal(pl('https://www.youtube.com/watch?v=abc'), false);
+  assert.equal(pl('https://www.youtube.com/watch?v=abc&list='), false);
+  assert.equal(pl('https://www.youtube.com/shorts/abc'), false);
+  assert.equal(pl('https://www.youtube.com/watch?v=abc&t=42s&si=xyz'), false);
 
   // parseNumberList
   assert.deepEqual(parseNumberList('2,3,5'), [2, 3, 5]);
